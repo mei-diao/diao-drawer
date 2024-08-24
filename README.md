@@ -30,7 +30,7 @@
 <!-- PROJECT LOGO -->
 <br />
 <div align="center">
-  <a href="https://github.com/github_username/repo_name">
+  <a href="https://github.com/mei-diao/diao-drawer">
     <img src="https://private-user-images.githubusercontent.com/84652133/360368362-0b95d612-0f50-4e59-bba7-d10402490d1f.png?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3MjQ1MDc0NTgsIm5iZiI6MTcyNDUwNzE1OCwicGF0aCI6Ii84NDY1MjEzMy8zNjAzNjgzNjItMGI5NWQ2MTItMGY1MC00ZTU5LWJiYTctZDEwNDAyNDkwZDFmLnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNDA4MjQlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjQwODI0VDEzNDU1OFomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPWY2YzgwNzMyMTdjMmJhODg0NmJlNWNmMDIyMWIyZTVlNTQwNzAwZjY3YjdiOThkOWJhY2Y3ZTk2YjU5Y2FlZDAmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0JmFjdG9yX2lkPTAma2V5X2lkPTAmcmVwb19pZD0wIn0.EgADL5JvwTHqAJsTyoR-jfrg4JsApTgqmdP7IfGPnxI" alt="Logo" width="130" height="180">
   </a>
 
@@ -86,7 +86,7 @@
 [![UDD Screen Shot][product-screenshot]](![image](https://github.com/user-attachments/assets/493a92fe-d2a3-43c5-a736-5af846ebf302)
 )
 
-Here's a blank template to get started: To avoid retyping too much info. Do a search and replace with your text editor for the following: `github_username`, `repo_name`, `twitter_handle`, `linkedin_username`, `email_client`, `email`, `project_title`, `project_description`
+Here's a blank template to get started: To avoid retyping too much info. Do a search and replace with your text editor for the following: `mei-diao`, `diao-drawer`, `twitter_handle`, `linkedin_username`, `email_client`, `email`, `Ultimate DIAO Drawer`, `Digital Imaging Analysis Operation`
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -126,7 +126,7 @@ This is an example of how to list things you need to use the software and how to
 1. Get a free API Key at [https://example.com](https://example.com)
 2. Clone the repo
    ```sh
-   git clone https://github.com/github_username/repo_name.git
+   git clone https://github.com/mei-diao/diao-drawer.git
    ```
 3. Install NPM packages
    ```sh
@@ -138,7 +138,7 @@ This is an example of how to list things you need to use the software and how to
    ```
 5. Change git remote url to avoid accidental pushes to base project
    ```sh
-   git remote set-url origin github_username/repo_name
+   git remote set-url origin mei-diao/diao-drawer
    git remote -v # confirm the changes
    ```
 
@@ -160,12 +160,13 @@ _For more examples, please refer to the [Documentation](https://example.com)_
 <!-- ROADMAP -->
 ## Roadmap
 
-- [ ] Feature 1
-- [ ] Feature 2
-- [ ] Feature 3
-    - [ ] Nested Feature
+- [ ] Creating DIAO Image
+- [ ] Using Gradio to build interface adjusting DIAO parameters
+- [ ] Costumized Coloring
+- [ ] 3D view and interaction
+- [ ] Real time rendering of DIAO
 
-See the [open issues](https://github.com/github_username/repo_name/issues) for a full list of proposed features (and known issues).
+See the [open issues](https://github.com/mei-diao/diao-drawer/issues) for a full list of proposed features (and known issues).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -189,8 +190,8 @@ Don't forget to give the project a star! Thanks again!
 
 ### Top contributors:
 
-<a href="https://github.com/github_username/repo_name/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=github_username/repo_name" alt="contrib.rocks image" />
+<a href="https://github.com/mei-diao/diao-drawer/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=mei-diao/diao-drawer" alt="contrib.rocks image" />
 </a>
 
 
@@ -209,7 +210,7 @@ Distributed under the MIT License. See `LICENSE.txt` for more information.
 
 Your Name - [@twitter_handle](https://twitter.com/twitter_handle) - email@email_client.com
 
-Project Link: [https://github.com/github_username/repo_name](https://github.com/github_username/repo_name)
+Project Link: [https://github.com/mei-diao/diao-drawer](https://github.com/mei-diao/diao-drawer)
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -228,16 +229,16 @@ Project Link: [https://github.com/github_username/repo_name](https://github.com/
 
 <!-- MARKDOWN LINKS & IMAGES -->
 <!-- https://www.markdownguide.org/basic-syntax/#reference-style-links -->
-[contributors-shield]: https://img.shields.io/github/contributors/github_username/repo_name.svg?style=for-the-badge
+[contributors-shield]: https://img.shields.io/github/contributors/mei-diao/diao-drawer.svg?style=for-the-badge
 [contributors-url]: https://github.com/meid-diao/diao-drawer/graphs/contributors
-[forks-shield]: https://img.shields.io/github/forks/github_username/repo_name.svg?style=for-the-badge
-[forks-url]: https://github.com/github_username/repo_name/network/members
-[stars-shield]: https://img.shields.io/github/stars/github_username/repo_name.svg?style=for-the-badge
-[stars-url]: https://github.com/github_username/repo_name/stargazers
-[issues-shield]: https://img.shields.io/github/issues/github_username/repo_name.svg?style=for-the-badge
-[issues-url]: https://github.com/github_username/repo_name/issues
-[license-shield]: https://img.shields.io/github/license/github_username/repo_name.svg?style=for-the-badge
-[license-url]: https://github.com/github_username/repo_name/blob/master/LICENSE.txt
+[forks-shield]: https://img.shields.io/github/forks/mei-diao/diao-drawer.svg?style=for-the-badge
+[forks-url]: https://github.com/mei-diao/diao-drawer/network/members
+[stars-shield]: https://img.shields.io/github/stars/mei-diao/diao-drawer.svg?style=for-the-badge
+[stars-url]: https://github.com/mei-diao/diao-drawer/stargazers
+[issues-shield]: https://img.shields.io/github/issues/mei-diao/diao-drawer.svg?style=for-the-badge
+[issues-url]: https://github.com/mei-diao/diao-drawer/issues
+[license-shield]: https://img.shields.io/github/license/mei-diao/diao-drawer.svg?style=for-the-badge
+[license-url]: https://github.com/mei-diao/diao-drawer/blob/master/LICENSE.txt
 [linkedin-shield]: https://img.shields.io/badge/-LinkedIn-black.svg?style=for-the-badge&logo=linkedin&colorB=555
 [linkedin-url]: https://linkedin.com/in/linkedin_username
 [product-screenshot]: https://github.com/user-attachments/assets/493a92fe-d2a3-43c5-a736-5af846ebf302
