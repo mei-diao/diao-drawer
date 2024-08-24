@@ -34,7 +34,7 @@
     <img src="https://private-user-images.githubusercontent.com/84652133/360368362-0b95d612-0f50-4e59-bba7-d10402490d1f.png?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3MjQ1MDc0NTgsIm5iZiI6MTcyNDUwNzE1OCwicGF0aCI6Ii84NDY1MjEzMy8zNjAzNjgzNjItMGI5NWQ2MTItMGY1MC00ZTU5LWJiYTctZDEwNDAyNDkwZDFmLnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNDA4MjQlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjQwODI0VDEzNDU1OFomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPWY2YzgwNzMyMTdjMmJhODg0NmJlNWNmMDIyMWIyZTVlNTQwNzAwZjY3YjdiOThkOWJhY2Y3ZTk2YjU5Y2FlZDAmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0JmFjdG9yX2lkPTAma2V5X2lkPTAmcmVwb19pZD0wIn0.EgADL5JvwTHqAJsTyoR-jfrg4JsApTgqmdP7IfGPnxI" alt="Logo" width="130" height="180">
   </a>
 
-<h3 align="center; font-size: 36px;">Ultimate DIAO Generator</h3>
+<h3 align="center; font-size: 36px;">Ultimate DIAO Drawer(UDD)</h3>
 
   <p align="center">
     <h2 style="font-size: 0.5em;">Digital <span style="font-size: 1.5em;">I</span>maging <span style="font-size: 1.5em;">A</span>nalysis <span style="font-size: 1.5em;">O</span>peration</h2>
@@ -83,7 +83,8 @@
 <!-- ABOUT THE PROJECT -->
 ## About The Project
 
-[![Product Name Screen Shot][product-screenshot]](https://example.com)
+[![UDD Screen Shot][product-screenshot]](![image](https://github.com/user-attachments/assets/493a92fe-d2a3-43c5-a736-5af846ebf302)
+)
 
 Here's a blank template to get started: To avoid retyping too much info. Do a search and replace with your text editor for the following: `github_username`, `repo_name`, `twitter_handle`, `linkedin_username`, `email_client`, `email`, `project_title`, `project_description`
 
