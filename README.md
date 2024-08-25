@@ -31,7 +31,7 @@
 <br />
 <div align="center">
   <a href="https://github.com/mei-diao/diao-drawer">
-    <img src="https://private-user-images.githubusercontent.com/84652133/360368362-0b95d612-0f50-4e59-bba7-d10402490d1f.png?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3MjQ1MDc0NTgsIm5iZiI6MTcyNDUwNzE1OCwicGF0aCI6Ii84NDY1MjEzMy8zNjAzNjgzNjItMGI5NWQ2MTItMGY1MC00ZTU5LWJiYTctZDEwNDAyNDkwZDFmLnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNDA4MjQlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjQwODI0VDEzNDU1OFomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPWY2YzgwNzMyMTdjMmJhODg0NmJlNWNmMDIyMWIyZTVlNTQwNzAwZjY3YjdiOThkOWJhY2Y3ZTk2YjU5Y2FlZDAmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0JmFjdG9yX2lkPTAma2V5X2lkPTAmcmVwb19pZD0wIn0.EgADL5JvwTHqAJsTyoR-jfrg4JsApTgqmdP7IfGPnxI" alt="Logo" width="130" height="180">
+    <img src="https://private-user-images.githubusercontent.com/84652133/360368362-0b95d612-0f50-4e59-bba7-d10402490d1f.png?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3MjQ1Njk2MDgsIm5iZiI6MTcyNDU2OTMwOCwicGF0aCI6Ii84NDY1MjEzMy8zNjAzNjgzNjItMGI5NWQ2MTItMGY1MC00ZTU5LWJiYTctZDEwNDAyNDkwZDFmLnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNDA4MjUlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjQwODI1VDA3MDE0OFomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPTIxZjRmNDIxNWI0YzE4MTI5MzRkMGQ0ZDMyNWQ1NWQ2YjEyNDM1ZmI1Mzk2Y2ViMjU5NjgzZThkMzk4NGNlNWMmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0JmFjdG9yX2lkPTAma2V5X2lkPTAmcmVwb19pZD0wIn0.z_QSh8Aqiz_h11h5sVmowevgP4T8fQ4Z11rqnBPyK1o" alt="Logo" width="130" height="180">
   </a>
 
 <h3 align="center; font-size: 36px;">Ultimate DIAO Drawer(UDD)</h3>
@@ -39,16 +39,26 @@
   <p align="center">
     <h2 style="font-size: 0.5em;">Digital <span style="font-size: 1.5em;">I</span>maging <span style="font-size: 1.5em;">A</span>nalysis <span style="font-size: 1.5em;">O</span>peration</h2>
     <br />
-    <a href="https://github.com/mei-diao/diao-drawer"><strong>Explore the docs »</strong></a>
-    <br />
-    <br />
-    <a href="https://huggingface.co/spaces/meidiao/diao-drawer">Online Demo</a>
-    ·
-    <a href="https://github.com/mei-diao/diao-drawer/issues/new?labels=bug&template=bug-report---.md">Report Bug</a>
-    ·
-    <a href="https://github.com/mei-diao/diao-drawer/issues/new?labels=enhancement&template=feature-request---.md">Request Feature</a>
+    <a href="https://github.com/mei-diao/diao-drawer">
+      <img src="https://img.shields.io/badge/Explore%20the%20docs-%E2%86%92-brightgreen">
+    </a>
+    <a href="https://huggingface.co/spaces/meidiao/diao-drawer">
+      <img src="https://img.shields.io/badge/%F0%9F%A4%97-Open_Gradio_Demo-blue">
+    </a>
+    <a href="https://github.com/mei-diao/diao-drawer/issues/new?labels=bug&template=bug-report---.md">
+      <img src="https://img.shields.io/badge/Report_Bug-red">
+    </a>
+    <a href="https://github.com/mei-diao/diao-drawer/issues/new?labels=enhancement&template=feature-request---.md">
+      <img src="https://img.shields.io/badge/Request_Feature-green">
+    </a>
   </p>
+
+
+
+
+  
 </div>
+
 
 
 
@@ -92,7 +102,7 @@
 
 ### Built With
 
-* [![Next.js]][Next-url]
+* [![python]][python-url]
 * [![React][React.js]][React-url]
 * [![Vue][Vue.js]][Vue-url]
 * [![Angular][Angular.io]][Angular-url]
@@ -100,6 +110,8 @@
 * [![Laravel][Laravel.com]][Laravel-url]
 * [![Bootstrap][Bootstrap.com]][Bootstrap-url]
 * [![JQuery][JQuery.com]][JQuery-url]
+* ![Libraries.io dependency status for GitHub repo](https://img.shields.io/librariesio/github/mei-diao/diao-drawer)
+
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -243,10 +255,12 @@ Project Link: [https://github.com/mei-diao/diao-drawer](https://github.com/mei-d
 [linkedin-url]: https://linkedin.com/in/linkedin_username
 [product-screenshot]: https://github.com/user-attachments/assets/493a92fe-d2a3-43c5-a736-5af846ebf302
 
-[gradio
+[python]: https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white
+[python-url]: https://python.org/
+[huggingface]: https://img.shields.io/badge/%F0%9F%A4%97-Open_Gradio_Demo-blue
 
-[Next.js]: https://img.shields.io/badge/next.js-000000?style=for-the-badge&logo=nextdotjs&logoColor=white
-[Next-url]: https://nextjs.org/
+[Next.js]: https://img.shields.io/badge/Python-3776AB?style=flat&logo=python&logoColor=white
+[Next-url]: https://python.org/
 [React.js]: https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB
 [React-url]: https://reactjs.org/
 [Vue.js]: https://img.shields.io/badge/Vue.js-35495E?style=for-the-badge&logo=vuedotjs&logoColor=4FC08D
