@@ -163,6 +163,7 @@ _For more examples, please refer to the [Documentation](https://example.com)_
 - [ ] Costumized Coloring GUI
 - [ ] 3D view and interaction
 - [ ] Real time rendering of DIAO accroding to gradio parameters
+- [ ] Generation of DIAO using natural language
 
 See the [open issues](https://github.com/mei-diao/diao-drawer/issues) for a full list of proposed features (and known issues).
 
