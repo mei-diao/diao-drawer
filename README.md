@@ -86,8 +86,6 @@
 [![UDD Screen Shot][product-screenshot]](![image](https://github.com/user-attachments/assets/493a92fe-d2a3-43c5-a736-5af846ebf302)
 )
 
-Here's a blank template to get started: To avoid retyping too much info. Do a search and replace with your text editor for the following: `mei-diao`, `diao-drawer`, `twitter_handle`, `linkedin_username`, `email_client`, `email`, `Ultimate DIAO Drawer`, `Digital Imaging Analysis Operation`
-
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 
