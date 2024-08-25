@@ -92,7 +92,7 @@
 
 ### Built With
 
-* [![Next][Next.js]][Next-url]
+* [![Next.js]][Next-url]
 * [![React][React.js]][React-url]
 * [![Vue][Vue.js]][Vue-url]
 * [![Angular][Angular.io]][Angular-url]
@@ -242,6 +242,9 @@ Project Link: [https://github.com/mei-diao/diao-drawer](https://github.com/mei-d
 [linkedin-shield]: https://img.shields.io/badge/-LinkedIn-black.svg?style=for-the-badge&logo=linkedin&colorB=555
 [linkedin-url]: https://linkedin.com/in/linkedin_username
 [product-screenshot]: https://github.com/user-attachments/assets/493a92fe-d2a3-43c5-a736-5af846ebf302
+
+[gradio
+
 [Next.js]: https://img.shields.io/badge/next.js-000000?style=for-the-badge&logo=nextdotjs&logoColor=white
 [Next-url]: https://nextjs.org/
 [React.js]: https://img.shields.io/badge/React-20232A?style=for-the-badge&logo=react&logoColor=61DAFB
@@ -258,3 +261,4 @@ Project Link: [https://github.com/mei-diao/diao-drawer](https://github.com/mei-d
 [Bootstrap-url]: https://getbootstrap.com
 [JQuery.com]: https://img.shields.io/badge/jQuery-0769AD?style=for-the-badge&logo=jquery&logoColor=white
 [JQuery-url]: https://jquery.com 
+
