@@ -160,11 +160,11 @@ _For more examples, please refer to the [Documentation](https://example.com)_
 <!-- ROADMAP -->
 ## Roadmap
 
-- [ ] Creating DIAO Image
-- [ ] Using Gradio to build interface adjusting DIAO parameters
-- [ ] Costumized Coloring
+- [x] Creating DIAO Image
+- [x] Using Gradio to build interface adjusting DIAO parameters
+- [ ] Costumized Coloring GUI
 - [ ] 3D view and interaction
-- [ ] Real time rendering of DIAO
+- [ ] Real time rendering of DIAO accroding to gradio parameters
 
 See the [open issues](https://github.com/mei-diao/diao-drawer/issues) for a full list of proposed features (and known issues).
 
