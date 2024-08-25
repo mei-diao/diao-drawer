@@ -188,7 +188,7 @@ Don't forget to give the project a star! Thanks again!
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
-### Top contributors:
+<!--### Top contributors:
 
 <a href="https://github.com/mei-diao/diao-drawer/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=mei-diao/diao-drawer" alt="contrib.rocks image" />
@@ -197,7 +197,7 @@ Don't forget to give the project a star! Thanks again!
 
 
 <!-- LICENSE -->
-## License
+<!--## License
 
 Distributed under the MIT License. See `LICENSE.txt` for more information.
 
@@ -206,7 +206,7 @@ Distributed under the MIT License. See `LICENSE.txt` for more information.
 
 
 <!-- CONTACT -->
-## Contact
+<!--## Contact
 
 Your Name - [@twitter_handle](https://twitter.com/twitter_handle) - email@email_client.com
 
@@ -217,6 +217,7 @@ Project Link: [https://github.com/mei-diao/diao-drawer](https://github.com/mei-d
 
 
 <!-- ACKNOWLEDGMENTS -->
+
 ## Acknowledgments
 
 * This project is built only for education purpose.
