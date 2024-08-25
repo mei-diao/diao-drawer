@@ -219,9 +219,9 @@ Project Link: [https://github.com/mei-diao/diao-drawer](https://github.com/mei-d
 <!-- ACKNOWLEDGMENTS -->
 ## Acknowledgments
 
-* []()
-* []()
-* []()
+* This project is built only for education purpose.
+* Distribution of this project including its products without explicit permission is not allowed.
+* Consequences brought by individuals using this project is not attributed to developers.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
