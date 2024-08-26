@@ -1,4 +1,4 @@
 flagged/
 *.glb
 *.stl
-*.png
+output.png
