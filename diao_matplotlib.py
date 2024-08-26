@@ -9,12 +9,13 @@ from matplotlib import rcParams
 sns.set(style="whitegrid")
 
 # Set font to SimHei (or another Chinese font) to support Chinese characters
-rcParams['font.sans-serif'] = ['SimHei']  # For Chinese characters
-rcParams['axes.unicode_minus'] = False  # To prevent the minus sign from being displayed as a square
+rcParams['font.sans-serif'] = ['SimHei'] # For Chinese characters
+rcParams['axes.unicode_minus'] = False # To prevent the minus sign from being displayed as a square
 
 darker_lightcoral = (180/255, 68/255, 68/255)
 
-def create_model(shaft_len, shaft_radius, head_radius, scrotum_radius, name):
+def create_model(shaft_len, shaft_radius, head_radius, scrotum_radius, name, live):
+    # ... (rest of the create_model function)
     def create_cylinder(ax, radius, height, x_offset=0, y_offset=0, z_offset=0, color='tan', alpha=1.0):
         z = np.linspace(z_offset, z_offset + height, 100)
         theta = np.linspace(0, 2 * np.pi, 100)
@@ -66,7 +67,7 @@ def create_model(shaft_len, shaft_radius, head_radius, scrotum_radius, name):
     ax.set_zlabel('Z')
 
     # Make sure the entire model is above the xy-plane
-    ax.set_box_aspect([1, 1, 2])  # Aspect ratio for better visualization
+    ax.set_box_aspect([1, 1, 2]) # Aspect ratio for better visualization
 
     ax.set_axis_off()
 
@@ -80,6 +81,7 @@ def create_model(shaft_len, shaft_radius, head_radius, scrotum_radius, name):
     
     return file_path
 
+
 # Gradio interface
 iface = gr.Interface(
     fn=create_model,
@@ -88,10 +90,12 @@ iface = gr.Interface(
         gr.Slider(minimum=0.5, maximum=5, step=0.1, label="Shaft Radius", value=1),
         gr.Slider(minimum=0.5, maximum=5, step=0.1, label="Head Radius", value=1.5),
         gr.Slider(minimum=1, maximum=5, step=0.5, label="Scrotum Radius", value=2),
-        gr.Textbox(label="Name", value="xyf")
+        gr.Textbox(label="Name", value="xyf"),
+        gr.Checkbox(label="Live Mode", value=True)
     ],
     outputs=gr.Image(type="filepath"),
-    title="Dick Creator"
+    title="DIAO Drawer",
+    live=True  # Set live mode to False by default
 )
 
 # Launch the Gradio interface
