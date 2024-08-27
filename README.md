@@ -31,7 +31,7 @@
 <br />
 <div align="center">
   <a href="https://github.com/mei-diao/diao-drawer">
-    <img src="https://private-user-images.githubusercontent.com/84652133/360368362-0b95d612-0f50-4e59-bba7-d10402490d1f.png?jwt=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmF3LmdpdGh1YnVzZXJjb250ZW50LmNvbSIsImtleSI6ImtleTUiLCJleHAiOjE3MjQ1Njk2MDgsIm5iZiI6MTcyNDU2OTMwOCwicGF0aCI6Ii84NDY1MjEzMy8zNjAzNjgzNjItMGI5NWQ2MTItMGY1MC00ZTU5LWJiYTctZDEwNDAyNDkwZDFmLnBuZz9YLUFtei1BbGdvcml0aG09QVdTNC1ITUFDLVNIQTI1NiZYLUFtei1DcmVkZW50aWFsPUFLSUFWQ09EWUxTQTUzUFFLNFpBJTJGMjAyNDA4MjUlMkZ1cy1lYXN0LTElMkZzMyUyRmF3czRfcmVxdWVzdCZYLUFtei1EYXRlPTIwMjQwODI1VDA3MDE0OFomWC1BbXotRXhwaXJlcz0zMDAmWC1BbXotU2lnbmF0dXJlPTIxZjRmNDIxNWI0YzE4MTI5MzRkMGQ0ZDMyNWQ1NWQ2YjEyNDM1ZmI1Mzk2Y2ViMjU5NjgzZThkMzk4NGNlNWMmWC1BbXotU2lnbmVkSGVhZGVycz1ob3N0JmFjdG9yX2lkPTAma2V5X2lkPTAmcmVwb19pZD0wIn0.z_QSh8Aqiz_h11h5sVmowevgP4T8fQ4Z11rqnBPyK1o" alt="Logo" width="130" height="180">
+    <img src="!https://github.com/user-attachments/assets/1bdb6672-8ece-497c-bc65-06f45f5b68c2" alt="Logo" width="130" height="180">
   </a>
 
 <h3 align="center; font-size: 36px;">Ultimate DIAO Drawer(UDD)</h3>
