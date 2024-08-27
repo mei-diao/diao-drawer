@@ -31,7 +31,7 @@
 <br />
 <div align="center">
   <a href="https://github.com/mei-diao/diao-drawer">
-    <img src="!https://github.com/user-attachments/assets/1bdb6672-8ece-497c-bc65-06f45f5b68c2" alt="Logo" width="130" height="180">
+    <img src="https://github.com/user-attachments/assets/1bdb6672-8ece-497c-bc65-06f45f5b68c2" alt="Logo" width="130" height="180">
   </a>
 
 <h3 align="center; font-size: 36px;">Ultimate DIAO Drawer(UDD)</h3>
