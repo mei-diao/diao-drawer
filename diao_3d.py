@@ -7,8 +7,10 @@ floating tubes) and a corona ridge. A few one-click presets are wired
 in.
 """
 
+import json
 import os
 import re
+import struct
 import tempfile
 
 import gradio as gr
@@ -16,6 +18,7 @@ import trimesh
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from scipy.spatial import cKDTree
+from skimage.measure import marching_cubes
 
 
 # ----------------------------- utilities -----------------------------
@@ -31,9 +34,31 @@ def hex_to_rgba(hex_color, alpha=255):
 
 
 def color_mesh_uniform(mesh, hex_color):
+    """Uniform per-vertex color (we keep everything per-vertex so vein
+    displacement, skin-tone noise, and gradients can all stack on top)."""
     rgba = hex_to_rgba(hex_color)
-    mesh.visual.face_colors = np.tile(rgba, (len(mesh.faces), 1))
+    mesh.visual.vertex_colors = np.tile(rgba, (len(mesh.vertices), 1))
     return mesh
+
+
+def _existing_or_uniform_rgb(mesh, hex_color):
+    """Read the current per-vertex RGB if set, else fall back to uniform
+    `hex_color`. Returns float (n, 3)."""
+    n = len(mesh.vertices)
+    visual = mesh.visual
+    if (
+        isinstance(visual, trimesh.visual.ColorVisuals)
+        and visual.vertex_colors is not None
+        and len(visual.vertex_colors) == n
+    ):
+        return visual.vertex_colors[:, :3].astype(float)
+    return np.tile(np.array(hex_to_rgb(hex_color), dtype=float), (n, 1))
+
+
+def _set_rgb(mesh, rgb):
+    rgb = np.clip(rgb, 0, 255)
+    rgba = np.hstack([rgb, 255 * np.ones((len(rgb), 1))]).astype(np.uint8)
+    mesh.visual.vertex_colors = rgba
 
 
 def sanitize_name(name):
@@ -57,6 +82,83 @@ def apply_wrinkles(mesh, intensity, smoothness, seed):
     return mesh
 
 
+def _tone_intensity(wrinkle_intensity):
+    """Map a wrinkle slider value (0..0.5) to a skin-tone variation
+    intensity (0..0.8). Includes a small baseline so even Smooth-preset
+    surfaces have a hint of color variation rather than looking like
+    flat plastic."""
+    return float(np.clip(0.15 + wrinkle_intensity * 2.5, 0.0, 0.8))
+
+
+def apply_skin_tone_variation(mesh, base_color_hex, intensity, seed):
+    """Add spatially-coherent per-vertex color jitter so the surface
+    isn't a flat single color. Mimics real skin: warmer (more vascularised)
+    blotches and slightly cooler/paler patches."""
+    n = len(mesh.vertices)
+    if n == 0 or intensity <= 0:
+        return mesh
+    rng = np.random.default_rng(seed)
+    raw = rng.normal(0.0, 1.0, n)
+    # Smooth across the flat vertex array — neighbouring vertices in
+    # procedurally-built shapes tend to be neighbours in space, so this
+    # gives roughly spatial coherence (good enough for blotchy skin).
+    smoothed = gaussian_filter(raw, sigma=10.0)
+    s = smoothed / max(smoothed.std(), 1e-6)
+    s = np.clip(s, -1.6, 1.6)
+
+    warm = np.array([22.0, -8.0, -10.0])  # toward red/pink
+    cool = np.array([-5.0, 6.0, 10.0])     # toward pale/cool
+
+    delta = np.where(
+        s[:, None] > 0,
+        s[:, None] * warm,
+        -s[:, None] * cool,
+    ) * intensity
+
+    rgb = _existing_or_uniform_rgb(mesh, base_color_hex)
+    _set_rgb(mesh, rgb + delta)
+    return mesh
+
+
+def apply_shaft_gradient(mesh, base_color_hex, shaft_len, top_redden=14.0):
+    """Subtle z-axis color gradient — tip a touch redder than the base
+    (mimics blood pooling toward the glans)."""
+    n = len(mesh.vertices)
+    if n == 0 or shaft_len <= 0:
+        return mesh
+    z = mesh.vertices[:, 2]
+    t = np.clip(z / shaft_len, 0.0, 1.0)
+    direction = np.array([top_redden, -top_redden * 0.4, -top_redden * 0.4])
+    rgb = _existing_or_uniform_rgb(mesh, base_color_hex)
+    _set_rgb(mesh, rgb + t[:, None] * direction)
+    return mesh
+
+
+def apply_glans_tip_redden(mesh, head_radius, head_z_center,
+                           redden_intensity=70.0):
+    """Apply a localized red tint to vertices very near the central tip
+    of the glans — where the urethral meatus would be. Real glans is
+    mostly skin-tone with just this one spot vivid red, so we get the
+    accent without painting the entire head."""
+    n = len(mesh.vertices)
+    if n == 0:
+        return mesh
+    top_z = head_z_center + head_radius
+    z_dist = np.abs(mesh.vertices[:, 2] - top_z)
+    radial = np.linalg.norm(mesh.vertices[:, :2], axis=1)
+    proximity = np.exp(
+        -((z_dist / (head_radius * 0.22)) ** 2 + (radial / (head_radius * 0.25)) ** 2)
+    )
+    # Push toward red: +R, -G, -B (saturates toward red without just
+    # adding luminance).
+    delta = np.outer(proximity, np.array([redden_intensity,
+                                          -redden_intensity * 0.45,
+                                          -redden_intensity * 0.45]))
+    rgb = _existing_or_uniform_rgb(mesh, "#000000")
+    _set_rgb(mesh, rgb + delta)
+    return mesh
+
+
 def apply_curvature(mesh, curvature, top_z):
     """Bend the mesh along +y as a function of z. Anything at z<=0 stays put,
     anything at z>=top_z gets shifted by curvature*top_z. Quadratic in between."""
@@ -67,6 +169,175 @@ def apply_curvature(mesh, curvature, top_z):
     v[:, 1] += curvature * top_z * (t ** 2)
     mesh.vertices = v
     return mesh
+
+
+def apply_regional_wrinkles(mesh, shaft_intensity, head_intensity, scrotum_intensity,
+                            shaft_len, head_z_center, smoothness, seed):
+    """Apply wrinkles whose intensity blends smoothly between regions
+    along z. The body is one mesh now (SDF + marching cubes), so we can't
+    apply per-part wrinkle intensities independently — instead we mix
+    them per-vertex using z-coordinate."""
+    if max(shaft_intensity, head_intensity, scrotum_intensity) <= 0:
+        return mesh
+    rng = np.random.default_rng(seed)
+    perturbations = rng.uniform(-1.0, 1.0, mesh.vertices.shape)
+    for axis in range(3):
+        perturbations[:, axis] = gaussian_filter(
+            perturbations[:, axis], sigma=max(smoothness, 0.01)
+        )
+
+    z = mesh.vertices[:, 2]
+    head_low = head_z_center - 0.5
+    head_high = head_z_center + 0.5
+    scrotum_high = 0.4
+    scrotum_low = -0.6
+
+    t_head = np.clip((z - head_low) / max(head_high - head_low, 1e-6), 0, 1)
+    t_scrotum = np.clip((scrotum_high - z) / max(scrotum_high - scrotum_low, 1e-6), 0, 1)
+
+    intensity = (1 - t_head) * shaft_intensity + t_head * head_intensity
+    intensity = (1 - t_scrotum) * intensity + t_scrotum * scrotum_intensity
+
+    mesh.vertices = mesh.vertices + perturbations * intensity[:, None]
+    return mesh
+
+
+def color_unified_by_region(mesh, shaft_color, head_color, scrotum_color,
+                            shaft_len, head_z_center, head_radius):
+    """Blend shaft / head / scrotum colors smoothly along z so the
+    transitions are gradient instead of hard boundaries — but tight
+    enough that each region still reads as its own color."""
+    n = len(mesh.vertices)
+    if n == 0:
+        return mesh
+    z = mesh.vertices[:, 2]
+
+    rgb_shaft = np.array(hex_to_rgb(shaft_color), dtype=float)
+    rgb_head = np.array(hex_to_rgb(head_color), dtype=float)
+    rgb_scrotum = np.array(hex_to_rgb(scrotum_color), dtype=float)
+
+    # Wide transition bands so user sees an obvious gradient region
+    # between each pair of uniform-color zones. Combined with high
+    # luminance contrast in the preset colors, this makes regions
+    # visually distinct even though model-viewer's tonemap collapses
+    # warm hues toward the same peach.
+    head_low = shaft_len - head_radius * 0.6
+    head_high = shaft_len + head_radius * 0.5
+    scrotum_high = 0.6
+    scrotum_low = -1.0
+
+    t_head = np.clip((z - head_low) / max(head_high - head_low, 1e-6), 0, 1)
+    t_scrotum = np.clip((scrotum_high - z) / max(scrotum_high - scrotum_low, 1e-6), 0, 1)
+
+    rgb = (1 - t_head[:, None]) * rgb_shaft + t_head[:, None] * rgb_head
+    rgb = (1 - t_scrotum[:, None]) * rgb + t_scrotum[:, None] * rgb_scrotum
+
+    rgba = np.hstack([rgb, 255 * np.ones((n, 1))]).astype(np.uint8)
+    mesh.visual.vertex_colors = rgba
+    return mesh
+
+
+# ------------------------------ SDF body ------------------------------
+
+
+def _sdf_sphere(p, center, radius):
+    return np.linalg.norm(p - np.asarray(center, dtype=float), axis=1) - radius
+
+
+def _sdf_capsule(p, a, b, radius):
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    pa = p - a
+    ba = b - a
+    h = np.clip((pa @ ba) / max(np.dot(ba, ba), 1e-9), 0.0, 1.0)
+    return np.linalg.norm(pa - h[:, None] * ba, axis=1) - radius
+
+
+def _sdf_torus(p, center, major_r, minor_r):
+    pl = p - np.asarray(center, dtype=float)
+    q = np.column_stack([np.linalg.norm(pl[:, :2], axis=1) - major_r, pl[:, 2]])
+    return np.linalg.norm(q, axis=1) - minor_r
+
+
+def _smooth_min(a, b, k):
+    """Cubic polynomial smooth-min — produces a continuous, blended
+    minimum that gives natural-looking junctions when used to combine
+    SDFs of overlapping primitives."""
+    h = np.clip(0.5 + 0.5 * (b - a) / max(k, 1e-9), 0.0, 1.0)
+    return b * (1 - h) + a * h - k * h * (1 - h)
+
+
+def _phallus_sdf(points, shaft_len, shaft_radius, head_radius, scrotum_radius,
+                 corona_intensity):
+    """SDF for the whole body. Smooth-min blends produce continuous
+    transitions between shaft/head/scrotum (no visible joints)."""
+    shaft_eff_r = shaft_radius * 1.5  # capsule that approximates the old 3-cylinder cluster
+    shaft = _sdf_capsule(points, [0, 0, -0.5], [0, 0, shaft_len], shaft_eff_r)
+
+    head_z = shaft_len + head_radius * 0.4  # sit head fairly low so it caps the shaft cleanly
+    head = _sdf_sphere(points, [0, 0, head_z], head_radius)
+
+    scrotum_offset = scrotum_radius / 1.2
+    scr1 = _sdf_sphere(points, [-scrotum_offset, 0.3, -scrotum_offset], scrotum_radius)
+    scr2 = _sdf_sphere(points, [+scrotum_offset, 0.3, -scrotum_offset], scrotum_radius)
+
+    sd = _smooth_min(shaft, head, 0.55)
+    sd = _smooth_min(sd, scr1, 0.7)
+    sd = _smooth_min(sd, scr2, 0.7)
+
+    if corona_intensity > 0:
+        corona_minor = head_radius * 0.10 * corona_intensity
+        corona_major = head_radius * 1.0
+        corona_z = head_z - head_radius * 0.55
+        corona = _sdf_torus(points, [0, 0, corona_z], corona_major, corona_minor)
+        # tighter blend so the corona reads as a ridge, not a pillow
+        sd = _smooth_min(sd, corona, 0.18)
+
+    return sd, head_z
+
+
+def _build_unified_body(shaft_len, shaft_radius, head_radius, scrotum_radius,
+                        corona_intensity, resolution=0.15):
+    """Sample the phallus SDF on a grid and extract the level-0 isosurface
+    via marching cubes. Returns (mesh, head_z_center).
+
+    Grid bounds must contain the full extent of every primitive (with a
+    margin), otherwise marching cubes clips the surface against the grid
+    walls and you get hollow openings on the body — which is what
+    happens to the scrotum spheres if xy_max is set tight to the shaft
+    radius."""
+    shaft_eff_r = shaft_radius * 1.5
+    # Scrotum spheres are offset along x AND have a y-bias of 0.3 — both
+    # need full coverage.
+    scrotum_outer_x = scrotum_radius / 1.2 + scrotum_radius
+    scrotum_outer_y = 0.3 + scrotum_radius
+    xy_max = max(shaft_eff_r, scrotum_outer_x, scrotum_outer_y) + 0.5
+
+    z_min = -(scrotum_radius / 1.2 + scrotum_radius) - 0.5
+    z_max = shaft_len + head_radius * 2.2 + 0.5
+
+    nx = int(2 * xy_max / resolution) + 1
+    ny = nx
+    nz = int((z_max - z_min) / resolution) + 1
+
+    x = np.linspace(-xy_max, xy_max, nx)
+    y = np.linspace(-xy_max, xy_max, ny)
+    z = np.linspace(z_min, z_max, nz)
+    xx, yy, zz = np.meshgrid(x, y, z, indexing="ij")
+    pts = np.stack([xx.ravel(), yy.ravel(), zz.ravel()], axis=1)
+
+    sd, head_z = _phallus_sdf(
+        pts, shaft_len, shaft_radius, head_radius, scrotum_radius, corona_intensity
+    )
+    sd = sd.reshape(nx, ny, nz)
+
+    verts, faces, _, _ = marching_cubes(
+        sd, level=0.0, spacing=(resolution, resolution, resolution)
+    )
+    verts = verts + np.array([-xy_max, -xy_max, z_min])
+
+    mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=True)
+    return mesh, head_z
 
 
 # ----------------------------- primitives -----------------------------
@@ -121,104 +392,37 @@ def create_tube(points, tube_radius, num_segments=6):
 # ---------------------------- feature parts ---------------------------
 
 
-# layout of the three cylinders that make up the shaft. Anchors used by
-# vein placement so paths sit on a real cylinder surface, not an
-# idealised circle.
-def _shaft_cylinders(shaft_radius):
-    return [
-        # (cx, cy, radius_scale)
-        (+shaft_radius / 2, 0.0, 1.0),
-        (-shaft_radius / 2, 0.0, 1.0),
-        (0.0, shaft_radius * 0.8, 0.8),
-    ]
-
-
-def _make_subdivided_cylinder(radius, height, sections=18, longitudinal=16):
-    """Cylinder with vertices in BOTH radial and longitudinal directions.
-    `trimesh.creation.cylinder` only puts vertices at the caps, which means
-    surface displacement (e.g. vein ridges) has nothing to push in the
-    middle band. This generator gives a dense quad-strip side wall plus
-    fan-triangulated caps."""
-    angle = np.linspace(0, 2 * np.pi, sections, endpoint=False)
-    z = np.linspace(0, height, longitudinal)
-    AA, ZZ = np.meshgrid(angle, z)
-    X = radius * np.cos(AA)
-    Y = radius * np.sin(AA)
-    side = np.column_stack([X.ravel(), Y.ravel(), ZZ.ravel()])
-
-    faces = []
-    for i in range(longitudinal - 1):
-        for j in range(sections):
-            jn = (j + 1) % sections
-            a = i * sections + j
-            b = i * sections + jn
-            c = (i + 1) * sections + j
-            d = (i + 1) * sections + jn
-            faces.append([a, b, c])
-            faces.append([c, b, d])
-
-    bottom_idx = len(side)
-    top_idx = bottom_idx + 1
-    vertices = np.vstack([side, [0, 0, 0], [0, 0, height]])
-    for j in range(sections):
-        jn = (j + 1) % sections
-        faces.append([bottom_idx, jn, j])  # outward normal -z
-    base = (longitudinal - 1) * sections
-    for j in range(sections):
-        jn = (j + 1) % sections
-        faces.append([top_idx, base + j, base + jn])  # outward normal +z
-
-    return trimesh.Trimesh(vertices=vertices, faces=np.asarray(faces))
-
-
-def _build_shaft_geometry(shaft_len, shaft_radius):
-    parts = []
-    # Cap longitudinal at 20 — more than that just slows the browser
-    # without visibly improving the vein-displacement smoothness.
-    longitudinal = int(np.clip(shaft_len * 2.5, 8, 20))
-    for cx, cy, r_scale in _shaft_cylinders(shaft_radius):
-        c = _make_subdivided_cylinder(
-            radius=shaft_radius * r_scale, height=shaft_len,
-            sections=18, longitudinal=longitudinal,
-        )
-        c.apply_translation([cx, cy, 0])
-        parts.append(c)
-    return trimesh.util.concatenate(parts)
-
-
 def _vein_paths_on_shaft(shaft_len, shaft_radius, vein_count, seed):
-    """Generate vein polylines that genuinely lie on the shaft cylinder
-    surface (each vein is anchored to one of the three cylinders)."""
+    """Generate vein polylines on the unified shaft surface.
+    Anchored to a single capsule of effective radius `shaft_radius * 1.5`,
+    matching the SDF that built the unified body."""
     if vein_count <= 0:
         return []
     rng = np.random.default_rng(seed + 5)
-    cylinders = _shaft_cylinders(shaft_radius)
+    eff_r = shaft_radius * 1.5
     paths = []
     for _ in range(int(vein_count)):
-        host = cylinders[rng.integers(0, len(cylinders))]
-        cx, cy, r_scale = host
-        host_r = shaft_radius * r_scale
         base_angle = rng.uniform(0, 2 * np.pi)
         wind_amp = rng.uniform(0.4, 1.0)
         wind_freq = rng.uniform(1.5, 3.0) * np.pi / max(shaft_len, 1e-3)
         phase = rng.uniform(0, 2 * np.pi)
-        z_lo = rng.uniform(0.05, 0.2) * shaft_len
-        z_hi = rng.uniform(0.85, 0.97) * shaft_len
+        z_lo = rng.uniform(0.10, 0.25) * shaft_len
+        z_hi = rng.uniform(0.80, 0.92) * shaft_len
         z = np.linspace(z_lo, z_hi, 50)
         angle = base_angle + wind_amp * np.sin(wind_freq * z + phase)
-        x = cx + host_r * np.cos(angle)
-        y = cy + host_r * np.sin(angle)
+        x = eff_r * np.cos(angle)
+        y = eff_r * np.sin(angle)
         paths.append(np.column_stack((x, y, z)))
     return paths
 
 
 def _displace_and_color_veins(shaft_mesh, vein_paths, vein_radius, base_color):
     """Push shaft vertices outward along the local normal where they sit
-    near a vein path point, and tint them darker. This embeds the vein
-    as a raised ridge on the shaft surface (real veins, not floating
-    tubes)."""
+    near a vein path point, and tint them darker. Only the
+    near-vein vertices are modified; everything else keeps whatever
+    color was already on it (so head red and scrotum tan survive)."""
     if not vein_paths or vein_radius <= 0:
-        return color_mesh_uniform(shaft_mesh, base_color)
+        return shaft_mesh
 
     all_pts = np.vstack(vein_paths)
     tree = cKDTree(all_pts)
@@ -232,80 +436,40 @@ def _displace_and_color_veins(shaft_mesh, vein_paths, vein_radius, base_color):
     normals = shaft_mesh.vertex_normals  # cached; trimesh invalidates on vertex change
     shaft_mesh.vertices = shaft_mesh.vertices + normals * push[:, None]
 
-    # Vein vertex color: blend base toward a cool dark tone (real
-    # subdermal veins look bluish/purple due to subsurface scattering),
-    # not a pure darken of the base which reads as a scar.
-    rgb_base = np.array(hex_to_rgb(base_color), dtype=float)
+    # Vein vertex color: read whatever color was set previously and blend
+    # ONLY the near-vein vertices toward a cool dark tone. Don't reset
+    # far vertices to base_color — they already have their region color
+    # (head red, scrotum tan, etc.).
+    existing_rgb = _existing_or_uniform_rgb(shaft_mesh, base_color)
     cool_dark = np.array([55.0, 40.0, 80.0])  # desaturated dark purple
-    rgb_vein = 0.55 * rgb_base * 0.45 + 0.45 * cool_dark  # half-mix toward cool
     weight = np.exp(-(dists / sigma_color) ** 2)[:, None]
-    rgb = (1 - weight) * rgb_base + weight * rgb_vein
-    rgba = np.hstack([rgb, 255 * np.ones((len(rgb), 1))]).astype(np.uint8)
-    shaft_mesh.visual.vertex_colors = rgba
+    rgb = existing_rgb * (1 - weight) + cool_dark * weight
+    _set_rgb(shaft_mesh, rgb)
     return shaft_mesh
 
 
-def make_shaft(shaft_len, shaft_radius, color, wrinkle_intensity,
-               wrinkle_smoothness, vein_count, vein_radius, seed):
-    shaft = _build_shaft_geometry(shaft_len, shaft_radius)
-    shaft = apply_wrinkles(shaft, wrinkle_intensity, wrinkle_smoothness, seed=seed)
-    paths = _vein_paths_on_shaft(shaft_len, shaft_radius, vein_count, seed)
-    shaft = _displace_and_color_veins(shaft, paths, vein_radius, color)
-    return shaft
-
-
-def make_head(head_radius, shaft_len, color, wrinkle_intensity,
-              wrinkle_smoothness, seed):
-    head = trimesh.creation.icosphere(subdivisions=3, radius=head_radius)
-    head.apply_translation([0, 0, shaft_len + head_radius / 1.4])
-    head = apply_wrinkles(head, wrinkle_intensity, wrinkle_smoothness, seed=seed + 1)
-    return color_mesh_uniform(head, color)
-
-
-def make_corona(head_radius, shaft_len, color, ridge_intensity):
-    """Torus around the base of the glans."""
-    if ridge_intensity <= 0:
-        return None
-    minor = head_radius * 0.12 * ridge_intensity
-    torus = trimesh.creation.torus(
-        major_radius=head_radius * 1.02, minor_radius=minor
-    )
-    torus.apply_translation([0, 0, shaft_len + head_radius * 0.25])
-    return color_mesh_uniform(torus, color)
-
-
-def make_scrotum(scrotum_radius, color, wrinkle_intensity, wrinkle_smoothness,
-                 hair_density, hair_length, seed):
-    spheres = []
-    for x in [-scrotum_radius / 1.2, scrotum_radius / 1.2]:
-        s = trimesh.creation.icosphere(subdivisions=3, radius=scrotum_radius)
-        s.apply_translation([x, 0.3, -scrotum_radius / 1.2])
-        s = apply_wrinkles(s, wrinkle_intensity, wrinkle_smoothness, seed=seed + 2)
-        spheres.append(s)
-    scrotum = trimesh.util.concatenate(spheres)
-    scrotum = color_mesh_uniform(scrotum, color)
-
-    if hair_density > 0 and hair_length > 0:
-        hair = make_hair(scrotum, int(hair_density), float(hair_length), seed=seed + 3)
-        if hair is not None:
-            scrotum = trimesh.util.concatenate([scrotum, hair])
-    return scrotum
-
-
-def make_hair(surface_mesh, num_hairs, hair_length, seed):
+def make_hair(surface_mesh, num_hairs, hair_length, seed, max_z=None):
     """Curly helical strands rooted at sampled vertices, oriented along
-    the local normal at that same vertex (the original code sampled
-    `point` and `normal` from independent random indices)."""
+    the local normal at that same vertex.
+
+    `max_z` restricts sampling to vertices below that z height — used to
+    keep hair on the scrotum region of the unified body."""
     n = len(surface_mesh.vertices)
     if n == 0 or num_hairs <= 0:
         return None
+    candidate_idx = np.arange(n)
+    if max_z is not None:
+        candidate_idx = candidate_idx[surface_mesh.vertices[candidate_idx, 2] < max_z]
+    if len(candidate_idx) == 0:
+        return None
     rng = np.random.default_rng(seed)
-    indices = rng.integers(0, n, size=num_hairs)
+    indices = rng.choice(candidate_idx, size=num_hairs, replace=True)
     hairs = []
     for idx in indices:
         point = surface_mesh.vertices[idx]
         normal = surface_mesh.vertex_normals[idx]
-        # Skip the top half of the scrotum so we don't get bald-spot tufts on the upper surface.
+        # Skip the top half (normal[2] > 0.5) so we don't get hair tufts on
+        # the upper surface of the scrotum.
         if normal[2] > 0.5:
             continue
         direction = normal + rng.uniform(-0.2, 0.2, size=3)
@@ -318,6 +482,94 @@ def make_hair(surface_mesh, num_hairs, hair_length, seed):
         return None
     hair_mesh = trimesh.util.concatenate(hairs)
     return color_mesh_uniform(hair_mesh, "#1a1a1a")
+
+
+def _srgb_to_linear_uint8(rgb_uint8):
+    """Convert an sRGB-encoded uint8 color array to linear-light uint8.
+    glTF 2.0 PBR shaders expect vertex colors in linear space, but the
+    color values we author (and that color pickers produce) are sRGB.
+    Without this conversion the lit result looks washed out / overbright."""
+    s = np.asarray(rgb_uint8, dtype=float) / 255.0
+    linear = np.where(
+        s <= 0.04045,
+        s / 12.92,
+        ((s + 0.055) / 1.055) ** 2.4,
+    )
+    return np.clip(linear * 255.0, 0, 255).astype(np.uint8)
+
+
+def _inject_skin_pbr_material(glb_bytes,
+                              metallic=0.0,
+                              roughness=0.78,
+                              base_color_factor=1.0,
+                              double_sided=True,
+                              unlit=True):
+    """Inject a glTF material so the viewer renders consistent colors.
+
+    With `unlit=True` we use the standard `KHR_materials_unlit`
+    extension. Why: model-viewer's default lit pipeline runs ACES
+    tonemapping on top of a bright neutral IBL, which compresses the
+    region-distinct hues we're authoring (shaft brown / head deep red /
+    scrotum tan) into similar peach-orange. Unlit makes the viewer
+    display vertex colors directly (modulo gamma), preserving the hue
+    differences. We lose the soft specular highlight, but the alternative
+    is colors that all read the same.
+    """
+    # parse glb chunks
+    if glb_bytes[:4] != b"glTF":
+        return glb_bytes
+    json_len = struct.unpack("<I", glb_bytes[12:16])[0]
+    if glb_bytes[16:20] != b"JSON":
+        return glb_bytes
+    json_str = glb_bytes[20:20 + json_len].decode("utf-8").rstrip("\x00 ")
+    gltf = json.loads(json_str)
+
+    # binary chunk follows the JSON chunk
+    bin_offset = 20 + json_len
+    bin_len = struct.unpack("<I", glb_bytes[bin_offset:bin_offset + 4])[0]
+    bin_type = glb_bytes[bin_offset + 4:bin_offset + 8]
+    bin_data = glb_bytes[bin_offset + 8:bin_offset + 8 + bin_len]
+
+    bcf = float(base_color_factor)
+    material = {
+        "name": "skin_unlit" if unlit else "skin",
+        "pbrMetallicRoughness": {
+            "baseColorFactor": [bcf, bcf, bcf, 1.0],
+            "metallicFactor": float(metallic),
+            "roughnessFactor": float(roughness),
+        },
+        "doubleSided": bool(double_sided),
+    }
+    if unlit:
+        material["extensions"] = {"KHR_materials_unlit": {}}
+        ext_used = gltf.setdefault("extensionsUsed", [])
+        if "KHR_materials_unlit" not in ext_used:
+            ext_used.append("KHR_materials_unlit")
+
+    materials = gltf.setdefault("materials", [])
+    materials.append(material)
+    mat_idx = len(materials) - 1
+    for m in gltf.get("meshes", []):
+        for p in m.get("primitives", []):
+            p["material"] = mat_idx
+
+    new_json = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
+    # pad json chunk to 4-byte boundary with spaces
+    pad = (4 - (len(new_json) % 4)) % 4
+    new_json += b" " * pad
+
+    total = 12 + 8 + len(new_json) + 8 + len(bin_data)
+    out = bytearray()
+    out += b"glTF"
+    out += struct.pack("<I", 2)
+    out += struct.pack("<I", total)
+    out += struct.pack("<I", len(new_json))
+    out += b"JSON"
+    out += new_json
+    out += struct.pack("<I", len(bin_data))
+    out += bin_type
+    out += bin_data
+    return bytes(out)
 
 
 # ------------------------------- assembly ------------------------------
@@ -339,33 +591,73 @@ def create_model(
 ):
     seed = int(wrinkle_seed) if wrinkle_seed is not None else 0
 
-    shaft = make_shaft(
-        shaft_len, shaft_radius, shaft_color,
-        shaft_wrinkle_intensity, wrinkle_smoothness,
-        vein_count, vein_radius, seed,
-    )
-    head = make_head(
-        head_radius, shaft_len, head_color,
-        head_wrinkle_intensity, wrinkle_smoothness, seed,
-    )
-    scrotum = make_scrotum(
-        scrotum_radius, scrotum_color,
-        scrotum_wrinkle_intensity, wrinkle_smoothness,
-        hair_density, hair_length, seed,
+    # 1. Build a single watertight body from an SDF. Smooth-min unions
+    # mean shaft↔head and shaft↔scrotum already blend continuously here.
+    body, head_z_center = _build_unified_body(
+        shaft_len, shaft_radius, head_radius, scrotum_radius, corona_intensity
     )
 
-    upper_parts = [shaft, head]
-    corona = make_corona(head_radius, shaft_len, head_color, corona_intensity)
-    if corona is not None:
-        upper_parts.append(corona)
+    # 2. Per-region wrinkles, with intensity blended smoothly across z so
+    # the boundary between regions doesn't show as a wrinkle-density seam.
+    body = apply_regional_wrinkles(
+        body,
+        shaft_wrinkle_intensity, head_wrinkle_intensity, scrotum_wrinkle_intensity,
+        shaft_len, head_z_center, wrinkle_smoothness, seed,
+    )
 
-    upper = trimesh.util.concatenate(upper_parts)
+    # 3. Curvature (z-based bend; scrotum below z=0 stays put).
     top_z = shaft_len + 2 * head_radius
-    upper = apply_curvature(upper, curvature, top_z)
+    body = apply_curvature(body, curvature, top_z)
 
-    final_model = trimesh.util.concatenate([upper, scrotum])
+    # 4. Smooth color blending across z (shaft <-> head <-> scrotum).
+    body = color_unified_by_region(
+        body, shaft_color, head_color, scrotum_color,
+        shaft_len, head_z_center, head_radius,
+    )
+
+    # 5. Subtle z-gradient on the shaft (tip a touch redder).
+    body = apply_shaft_gradient(body, shaft_color, shaft_len)
+
+    # 6. Localized red tint at the urethral meatus (only the very tip).
+    body = apply_glans_tip_redden(body, head_radius, head_z_center)
+
+    # 7. Vein displacement — only the vertices physically near the vein
+    # paths get pushed outward / tinted, so head and scrotum aren't
+    # affected even though we operate on the unified mesh.
+    paths = _vein_paths_on_shaft(shaft_len, shaft_radius, vein_count, seed)
+    if paths and vein_radius > 0:
+        body = _displace_and_color_veins(body, paths, vein_radius, shaft_color)
+
+    # 8. Per-vertex skin-tone variation on top.
+    avg_wrinkle = (
+        shaft_wrinkle_intensity + head_wrinkle_intensity + scrotum_wrinkle_intensity
+    ) / 3.0
+    body = apply_skin_tone_variation(
+        body, shaft_color, _tone_intensity(avg_wrinkle), seed + 11
+    )
+
+    # 9. Hair on the scrotum region (z below the shaft base).
+    if hair_density > 0 and hair_length > 0:
+        hair = make_hair(
+            body, int(hair_density), float(hair_length),
+            seed=seed + 17, max_z=-0.2,
+        )
+        if hair is not None:
+            body = trimesh.util.concatenate([body, hair])
+
+    # 10. Skip sRGB→linear conversion. We tried it and ACES tonemap +
+    # bright IBL still squished all hues to similar peach in
+    # model-viewer. By leaving vertex_colors as sRGB hex, the viewer
+    # treats them as already-linear, the relative R/G/B ratios are
+    # preserved through tonemapping, and distinct hues come through.
+
     file_path = os.path.join(_OUTPUT_DIR, f"{sanitize_name(name)}_model.glb")
-    final_model.export(file_path)
+    glb_bytes = trimesh.exchange.gltf.export_glb(body)
+    # No material injection — let trimesh's default (no PBR material) be
+    # used. Useful as a baseline check to see what the viewer does
+    # without our material parameters.
+    with open(file_path, "wb") as f:
+        f.write(glb_bytes)
     return file_path
 
 
@@ -390,7 +682,11 @@ PRESETS = {
     "Default": dict(
         shaft_len=7, shaft_radius=1.0, head_radius=1.5, scrotum_radius=2.0,
         curvature=0.0, corona_intensity=0.6,
-        shaft_color="#8B4513", head_color="#B44444", scrotum_color="#FFDAB9",
+        # head/shaft/scrotum keep distinct LUMINANCE bands but only
+        # subtle hue difference between head and shaft (head is just
+        # slightly deeper/redder skin). The vivid red is reserved for
+        # the urethral meatus tip via apply_glans_tip_redden.
+        shaft_color="#7A4218", head_color="#682E10", scrotum_color="#C89B6A",
         shaft_wrinkle_intensity=0.06, head_wrinkle_intensity=0.04,
         scrotum_wrinkle_intensity=0.10, wrinkle_smoothness=2.5, wrinkle_seed=42,
         hair_density=15, hair_length=0.6,
@@ -400,7 +696,7 @@ PRESETS = {
     "Smooth": dict(
         shaft_len=6, shaft_radius=1.0, head_radius=1.4, scrotum_radius=1.8,
         curvature=0.0, corona_intensity=0.3,
-        shaft_color="#D6A07A", head_color="#C97070", scrotum_color="#E8C4A0",
+        shaft_color="#A06A48", head_color="#8C5234", scrotum_color="#DEB48E",
         shaft_wrinkle_intensity=0.0, head_wrinkle_intensity=0.0,
         scrotum_wrinkle_intensity=0.0, wrinkle_smoothness=2.5, wrinkle_seed=0,
         hair_density=0, hair_length=0.5,
@@ -410,7 +706,7 @@ PRESETS = {
     "Realistic": dict(
         shaft_len=8, shaft_radius=1.1, head_radius=1.6, scrotum_radius=2.0,
         curvature=0.06, corona_intensity=1.0,
-        shaft_color="#A06A4D", head_color="#9C4A4A", scrotum_color="#C9A185",
+        shaft_color="#6E3818", head_color="#5A2410", scrotum_color="#B89070",
         shaft_wrinkle_intensity=0.10, head_wrinkle_intensity=0.05,
         scrotum_wrinkle_intensity=0.16, wrinkle_smoothness=2.0, wrinkle_seed=7,
         hair_density=30, hair_length=0.7,
@@ -420,7 +716,7 @@ PRESETS = {
     "Cartoon": dict(
         shaft_len=5, shaft_radius=1.4, head_radius=2.0, scrotum_radius=2.2,
         curvature=0.0, corona_intensity=0.4,
-        shaft_color="#FFB07A", head_color="#FF6F61", scrotum_color="#FFD8B5",
+        shaft_color="#C87858", head_color="#A85838", scrotum_color="#FFC8A0",
         shaft_wrinkle_intensity=0.0, head_wrinkle_intensity=0.0,
         scrotum_wrinkle_intensity=0.0, wrinkle_smoothness=2.5, wrinkle_seed=0,
         hair_density=0, hair_length=0.5,
@@ -453,9 +749,9 @@ def build_ui():
                     corona_intensity = gr.Slider(0, 2, value=0.6, step=0.05, label="Corona ridge")
 
                 with gr.Tab("Color"):
-                    shaft_color = gr.ColorPicker(label="Shaft color", value="#8B4513")
-                    head_color = gr.ColorPicker(label="Head color", value="#B44444")
-                    scrotum_color = gr.ColorPicker(label="Scrotum color", value="#FFDAB9")
+                    shaft_color = gr.ColorPicker(label="Shaft color", value="#7A4218")
+                    head_color = gr.ColorPicker(label="Head color", value="#682E10")
+                    scrotum_color = gr.ColorPicker(label="Scrotum color", value="#C89B6A")
                     gr.Markdown("_Click **Generate** below to apply colors._")
 
                 with gr.Tab("Surface"):
@@ -491,7 +787,13 @@ def build_ui():
                 # on initial page load WITHOUT a server-side `demo.load`
                 # event firing (which would race with any early UI clicks).
                 initial_glb = create_model(*_preset_args("Default"))
-                output = gr.Model3D(value=initial_glb, label="Output (.glb)")
+                output = gr.Model3D(
+                    value=initial_glb,
+                    label="Output (.glb)",
+                    # Light-gray background so the dark hair strands are
+                    # visible (against black they disappeared).
+                    clear_color=(0.85, 0.85, 0.85, 1.0),
+                )
 
         all_inputs = [
             shaft_len, shaft_radius, head_radius, scrotum_radius,
