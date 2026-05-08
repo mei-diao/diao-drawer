@@ -1,12 +1,12 @@
+# Contributing to DIAO Drawer
 
-# Contributing to College Acceptance Rate Prediction Project
-
-First off, thank you for considering contributing to this project! Your contributions, no matter how big or small, are greatly appreciated.
+Thanks for your interest in DIAO Drawer (UDD — Ultimate DIAO Drawer). This is
+a small toy project: parametric 3D mesh generation driven by a Gradio UI.
+Contributions of any size are welcome.
 
 ## Table of Contents
 
 - [How to Contribute](#how-to-contribute)
-- [Code of Conduct](#code-of-conduct)
 - [Getting Started](#getting-started)
 - [Submitting Changes](#submitting-changes)
 - [Issues](#issues)
@@ -14,99 +14,92 @@ First off, thank you for considering contributing to this project! Your contribu
 
 ## How to Contribute
 
-There are several ways to contribute to this project:
+There are several ways to contribute:
 
-- Reporting bugs or issues
-- Suggesting new features or improvements
-- Writing or improving documentation
-- Submitting pull requests for new features or bug fixes
-- Reviewing pull requests from others
-- Providing constructive feedback in discussions
-
-## Code of Conduct
-
-By participating in this project, you agree to abide by the [Code of Conduct](CODE_OF_CONDUCT.md). Please take a moment to review it.
+- Report bugs or rendering glitches
+- Suggest new shape / surface / preset parameters
+- Improve documentation or examples
+- Submit pull requests for fixes or features
+- Review pull requests from others
 
 ## Getting Started
 
-To get started, follow these steps:
+### 1. Fork the repository
 
-### 1. Fork the Repository
+Fork the repo to your own GitHub account.
 
-Fork the repository to your own GitHub account. This will allow you to work on your own version of the project.
-
-### 2. Clone the Forked Repository
-
-Clone your forked repository to your local machine:
+### 2. Clone your fork
 
 ```bash
-git https://github.com/mei-diao/diao-drawer
+git clone https://github.com/<your-username>/diao-drawer
 cd diao-drawer
 ```
 
-### 3. Install Dependencies
-
-Before making any changes, ensure you have installed all necessary dependencies. Install them by running:
+### 3. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 4. Create a New Branch
-
-Create a new branch for your changes. The branch name should be descriptive of the feature or issue you're addressing:
+### 4. Run locally
 
 ```bash
-git checkout -b my-feature-branch
+python diao_3d.py        # 3D version (Gradio + trimesh, exports .glb)
+python diao_matplotlib.py # 2D version (matplotlib PNG)
+```
+
+Then open the URL Gradio prints (default `http://127.0.0.1:7860`).
+
+### 5. Create a feature branch
+
+```bash
+git checkout -b feat/your-feature-name
 ```
 
 ## Submitting Changes
 
-### 1. Commit Changes
-
-After making your changes, commit them to your branch:
+### 1. Commit
 
 ```bash
-git add .
-git commit -m "Describe the changes you made"
+git add <files>
+git commit -m "short description of the change"
 ```
 
-### 2. Push Changes
+Prefer small, focused commits. Avoid `git add .` if you have unrelated local
+artifacts (`*.glb`, `output.png`, etc.) — those are gitignored but it's still
+easy to slip something in.
 
-Push your changes to your forked repository:
+### 2. Push
 
 ```bash
-git push origin my-feature-branch
+git push origin feat/your-feature-name
 ```
 
 ### 3. Open a Pull Request
 
-Go to the original repository and open a pull request from your forked branch to the main branch of the original project.
+Open a PR against `main` (or the current default branch). Please include:
 
-Make sure your pull request:
-- Clearly describes the issue being solved or the feature being added.
-- Includes relevant details such as screenshots or data, if applicable.
+- A short description of what the change does and why
+- Before/after screenshots if you changed rendering output
+- Steps to reproduce, if you're fixing a bug
 
 ## Issues
 
-When submitting issues, please include as much detail as possible:
-- Operating system and Python version
-- Steps to reproduce the issue
-- Expected behavior vs. actual behavior
-- Screenshots or logs, if applicable
+When filing an issue, include:
 
-This information will help maintainers address the issue more efficiently.
+- OS and Python version
+- Versions of the key deps (`gradio`, `trimesh`, `pydantic`, `numpy`)
+- Steps to reproduce
+- What you expected vs. what happened
+- Screenshots / logs if relevant
 
 ## Pull Requests
 
-We welcome pull requests for bug fixes, new features, and documentation improvements. Here are some guidelines for submitting pull requests:
-- Ensure that your code follows the style and conventions of the project.
-- Include appropriate tests for any new code you add.
-- Write clear and concise commit messages.
-- Make sure your pull request is focused on a single issue or feature. Avoid combining unrelated changes.
+- Match existing code style (it's plain Python — no formatter enforced).
+- Keep PRs focused on one issue or feature.
+- If you add a new geometry feature, default it to off / minimal so existing
+  outputs don't change unexpectedly.
 
 ---
 
-### Thank you for contributing to the **College-Acceptance-Rate-Prediction** project! 
-
-Your contributions help improve the accuracy, performance, and usability of this project for the community.
+Thanks for contributing to **DIAO Drawer**.

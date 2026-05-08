@@ -2,3 +2,5 @@ flagged/
 *.glb
 *.stl
 output.png
+__pycache__/
+*.pyc
