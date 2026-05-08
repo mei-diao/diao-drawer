@@ -187,13 +187,19 @@ def apply_regional_wrinkles(mesh, shaft_intensity, head_intensity, scrotum_inten
         )
 
     z = mesh.vertices[:, 2]
+    y = mesh.vertices[:, 1]
     head_low = head_z_center - 0.5
     head_high = head_z_center + 0.5
-    scrotum_high = 0.4
-    scrotum_low = -0.6
+    # Scrotum wrinkles only kick in well below the neck along -Y.
+    scrotum_high_y = -1.0
+    scrotum_low_y = -2.5
 
-    t_head = np.clip((z - head_low) / max(head_high - head_low, 1e-6), 0, 1)
-    t_scrotum = np.clip((scrotum_high - z) / max(scrotum_high - scrotum_low, 1e-6), 0, 1)
+    t_head = np.clip(
+        (z - head_low) / max(head_high - head_low, 1e-6), 0, 1
+    )
+    t_scrotum = np.clip(
+        (scrotum_high_y - y) / max(scrotum_high_y - scrotum_low_y, 1e-6), 0, 1
+    )
 
     intensity = (1 - t_head) * shaft_intensity + t_head * head_intensity
     intensity = (1 - t_scrotum) * intensity + t_scrotum * scrotum_intensity
@@ -203,31 +209,34 @@ def apply_regional_wrinkles(mesh, shaft_intensity, head_intensity, scrotum_inten
 
 
 def color_unified_by_region(mesh, shaft_color, head_color, scrotum_color,
-                            shaft_len, head_z_center, head_radius):
-    """Blend shaft / head / scrotum colors smoothly along z so the
-    transitions are gradient instead of hard boundaries — but tight
-    enough that each region still reads as its own color."""
+                            shaft_len, head_z_center, head_radius,
+                            scrotum_radius):
+    """Blend shaft / head / scrotum colors smoothly across the body.
+    head ↔ shaft transition runs along Z (shaft axis); shaft ↔ scrotum
+    transition runs along Y (scrotum hangs perpendicular in -Y)."""
     n = len(mesh.vertices)
     if n == 0:
         return mesh
     z = mesh.vertices[:, 2]
+    y = mesh.vertices[:, 1]
 
     rgb_shaft = np.array(hex_to_rgb(shaft_color), dtype=float)
     rgb_head = np.array(hex_to_rgb(head_color), dtype=float)
     rgb_scrotum = np.array(hex_to_rgb(scrotum_color), dtype=float)
 
-    # Wide transition bands so user sees an obvious gradient region
-    # between each pair of uniform-color zones. Combined with high
-    # luminance contrast in the preset colors, this makes regions
-    # visually distinct even though model-viewer's tonemap collapses
-    # warm hues toward the same peach.
     head_low = shaft_len - head_radius * 0.6
     head_high = shaft_len + head_radius * 0.5
-    scrotum_high = 0.6
-    scrotum_low = -1.0
+    # Scrotum centered at y = -1.1 * scrotum_radius. Color band runs
+    # from the upper edge of the sphere down through its middle.
+    scrotum_high_y = -scrotum_radius * 0.3
+    scrotum_low_y = -scrotum_radius * 1.0
 
-    t_head = np.clip((z - head_low) / max(head_high - head_low, 1e-6), 0, 1)
-    t_scrotum = np.clip((scrotum_high - z) / max(scrotum_high - scrotum_low, 1e-6), 0, 1)
+    t_head = np.clip(
+        (z - head_low) / max(head_high - head_low, 1e-6), 0, 1
+    )
+    t_scrotum = np.clip(
+        (scrotum_high_y - y) / max(scrotum_high_y - scrotum_low_y, 1e-6), 0, 1
+    )
 
     rgb = (1 - t_head[:, None]) * rgb_shaft + t_head[:, None] * rgb_head
     rgb = (1 - t_scrotum[:, None]) * rgb + t_scrotum[:, None] * rgb_scrotum
@@ -269,28 +278,55 @@ def _smooth_min(a, b, k):
 
 def _phallus_sdf(points, shaft_len, shaft_radius, head_radius, scrotum_radius,
                  corona_intensity):
-    """SDF for the whole body. Smooth-min blends produce continuous
-    transitions between shaft/head/scrotum (no visible joints)."""
-    shaft_eff_r = shaft_radius * 1.5  # capsule that approximates the old 3-cylinder cluster
-    shaft = _sdf_capsule(points, [0, 0, -0.5], [0, 0, shaft_len], shaft_eff_r)
+    """SDF for the whole body in MODEL space.
+
+    Shape orientation in this space:
+      - shaft along +Z   (head at +Z end)
+      - scrotum hangs in -Y (perpendicular to the shaft, below it)
+    A final rotation in create_model maps model +Z → world +X so the
+    shaft ends up horizontal in the viewer with the scrotum hanging
+    straight down.
+    """
+    shaft_eff_r = shaft_radius * 1.5
+    shaft = _sdf_capsule(points, [0, 0, 0], [0, 0, shaft_len], shaft_eff_r)
 
     head_z = shaft_len + head_radius * 0.4  # sit head fairly low so it caps the shaft cleanly
     head = _sdf_sphere(points, [0, 0, head_z], head_radius)
 
-    scrotum_offset = scrotum_radius / 1.2
-    scr1 = _sdf_sphere(points, [-scrotum_offset, 0.3, -scrotum_offset], scrotum_radius)
-    scr2 = _sdf_sphere(points, [+scrotum_offset, 0.3, -scrotum_offset], scrotum_radius)
+    # Scrotum hangs PERPENDICULAR to the shaft, in -Y, near the shaft
+    # root. Two balls offset on +X / -X (this lateral axis becomes
+    # the view's depth after the final rotation, so balls show as
+    # front/back from a 3/4 view).
+    scrotum_offset_x = scrotum_radius / 1.2
+    scrotum_y = -scrotum_radius * 1.1
+    # Slightly forward of the shaft's root along Z (i.e. at z just
+    # below shaft start) so the neck droops naturally rather than
+    # poking out of the side of the shaft.
+    scrotum_z = -shaft_radius * 0.4
+    scr1 = _sdf_sphere(points, [-scrotum_offset_x, scrotum_y, scrotum_z], scrotum_radius)
+    scr2 = _sdf_sphere(points, [+scrotum_offset_x, scrotum_y, scrotum_z], scrotum_radius)
+
+    # Neck capsule: short tube from shaft root → scrotum top, in -Y.
+    # Sit it deeper into both shapes so the visible stem is short.
+    neck_top_y = -shaft_radius * 0.2
+    neck_bottom_y = scrotum_y + scrotum_radius * 0.7
+    neck = _sdf_capsule(
+        points,
+        [0, neck_top_y, 0],
+        [0, neck_bottom_y, scrotum_z],
+        shaft_radius * 0.7,
+    )
 
     sd = _smooth_min(shaft, head, 0.55)
-    sd = _smooth_min(sd, scr1, 0.7)
-    sd = _smooth_min(sd, scr2, 0.7)
+    sd = _smooth_min(sd, neck, 0.45)
+    sd = _smooth_min(sd, scr1, 0.55)
+    sd = _smooth_min(sd, scr2, 0.55)
 
     if corona_intensity > 0:
         corona_minor = head_radius * 0.10 * corona_intensity
         corona_major = head_radius * 1.0
         corona_z = head_z - head_radius * 0.55
         corona = _sdf_torus(points, [0, 0, corona_z], corona_major, corona_minor)
-        # tighter blend so the corona reads as a ridge, not a pillow
         sd = _smooth_min(sd, corona, 0.18)
 
     return sd, head_z
@@ -301,27 +337,33 @@ def _build_unified_body(shaft_len, shaft_radius, head_radius, scrotum_radius,
     """Sample the phallus SDF on a grid and extract the level-0 isosurface
     via marching cubes. Returns (mesh, head_z_center).
 
-    Grid bounds must contain the full extent of every primitive (with a
-    margin), otherwise marching cubes clips the surface against the grid
-    walls and you get hollow openings on the body — which is what
-    happens to the scrotum spheres if xy_max is set tight to the shaft
-    radius."""
+    Grid bounds use separate extents per axis since the model is no
+    longer roughly cube-shaped:
+      - x: ± lateral spread (scrotum balls)
+      - y: shaft eff_r (slight) up to scrotum bottom (deep negative)
+      - z: shaft length (long, +Z direction)
+    """
     shaft_eff_r = shaft_radius * 1.5
-    # Scrotum spheres are offset along x AND have a y-bias of 0.3 — both
-    # need full coverage.
-    scrotum_outer_x = scrotum_radius / 1.2 + scrotum_radius
-    scrotum_outer_y = 0.3 + scrotum_radius
-    xy_max = max(shaft_eff_r, scrotum_outer_x, scrotum_outer_y) + 0.5
+    scrotum_offset_x = scrotum_radius / 1.2
 
-    z_min = -(scrotum_radius / 1.2 + scrotum_radius) - 0.5
+    x_max = max(shaft_eff_r, scrotum_offset_x + scrotum_radius) + 0.5
+    y_max = shaft_eff_r + 0.5
+    # Scrotum is centered at y = -1.1 * scrotum_radius and extends
+    # an additional scrotum_radius below.
+    y_min = -(scrotum_radius * 1.1 + scrotum_radius) - 0.5
     z_max = shaft_len + head_radius * 2.2 + 0.5
+    # Scrotum spheres are also offset along z by -shaft_radius * 0.4
+    # and have radius scrotum_radius, so the grid has to reach below
+    # -scrotum_radius - 0.4*shaft_radius (otherwise the spheres get
+    # clipped against z_min and you see hollow openings).
+    z_min = min(-shaft_eff_r, -scrotum_radius - shaft_radius * 0.4) - 0.5
 
-    nx = int(2 * xy_max / resolution) + 1
-    ny = nx
+    nx = int(2 * x_max / resolution) + 1
+    ny = int((y_max - y_min) / resolution) + 1
     nz = int((z_max - z_min) / resolution) + 1
 
-    x = np.linspace(-xy_max, xy_max, nx)
-    y = np.linspace(-xy_max, xy_max, ny)
+    x = np.linspace(-x_max, x_max, nx)
+    y = np.linspace(y_min, y_max, ny)
     z = np.linspace(z_min, z_max, nz)
     xx, yy, zz = np.meshgrid(x, y, z, indexing="ij")
     pts = np.stack([xx.ravel(), yy.ravel(), zz.ravel()], axis=1)
@@ -334,7 +376,7 @@ def _build_unified_body(shaft_len, shaft_radius, head_radius, scrotum_radius,
     verts, faces, _, _ = marching_cubes(
         sd, level=0.0, spacing=(resolution, resolution, resolution)
     )
-    verts = verts + np.array([-xy_max, -xy_max, z_min])
+    verts = verts + np.array([-x_max, y_min, z_min])
 
     mesh = trimesh.Trimesh(vertices=verts, faces=faces, process=True)
     return mesh, head_z
@@ -448,36 +490,74 @@ def _displace_and_color_veins(shaft_mesh, vein_paths, vein_radius, base_color):
     return shaft_mesh
 
 
-def make_hair(surface_mesh, num_hairs, hair_length, seed, max_z=None):
-    """Curly helical strands rooted at sampled vertices, oriented along
-    the local normal at that same vertex.
+def _random_walk_hair_path(length, center, base_direction, seed,
+                           n_segments=14):
+    """Build a hair polyline as a small random walk biased toward
+    `base_direction`. Each strand grows outward but bends randomly along
+    the way — every strand has its own seed so no two are identical.
 
-    `max_z` restricts sampling to vertices below that z height — used to
-    keep hair on the scrotum region of the unified body."""
+    Direction at each step blends the previous direction with a fresh
+    random perturbation and a pull back toward base_direction (so the
+    hair doesn't curl back on itself)."""
+    rng = np.random.default_rng(seed)
+    base_direction = np.asarray(base_direction, dtype=float)
+    base_direction = base_direction / max(np.linalg.norm(base_direction), 1e-9)
+    step = length / n_segments
+
+    # Initial direction: base + a small per-strand jitter (so different
+    # strands set off at different angles).
+    initial_jitter = rng.uniform(-0.25, 0.25, size=3)
+    current_dir = base_direction + initial_jitter
+    current_dir = current_dir / max(np.linalg.norm(current_dir), 1e-9)
+
+    points = [np.asarray(center, dtype=float)]
+    for i in range(n_segments):
+        # Random bend that grows toward the tip of the strand.
+        bend_strength = 0.18 + 0.05 * (i / n_segments)
+        delta = rng.normal(0.0, bend_strength, size=3)
+        current_dir = 0.85 * current_dir + delta
+        # Keep the strand pointed roughly outward — don't let it loop.
+        current_dir = 0.78 * current_dir + 0.22 * base_direction
+        current_dir = current_dir / max(np.linalg.norm(current_dir), 1e-9)
+        points.append(points[-1] + step * current_dir)
+    return np.asarray(points)
+
+
+def make_hair(surface_mesh, num_hairs, hair_length, seed, max_y=None):
+    """Random-bent strands rooted at sampled vertices and growing along
+    the local normal. Each strand has its own seed so no two are alike.
+
+    `max_y` restricts sampling to vertices below that y height — used to
+    keep hair on the scrotum region (which hangs in -Y in model space)."""
     n = len(surface_mesh.vertices)
     if n == 0 or num_hairs <= 0:
         return None
     candidate_idx = np.arange(n)
-    if max_z is not None:
-        candidate_idx = candidate_idx[surface_mesh.vertices[candidate_idx, 2] < max_z]
+    if max_y is not None:
+        candidate_idx = candidate_idx[surface_mesh.vertices[candidate_idx, 1] < max_y]
     if len(candidate_idx) == 0:
         return None
     rng = np.random.default_rng(seed)
     indices = rng.choice(candidate_idx, size=num_hairs, replace=True)
+    strand_seeds = rng.integers(0, 2**31 - 1, size=num_hairs)
+
     hairs = []
-    for idx in indices:
+    for idx, strand_seed in zip(indices, strand_seeds):
         point = surface_mesh.vertices[idx]
         normal = surface_mesh.vertex_normals[idx]
-        # Skip the top half (normal[2] > 0.5) so we don't get hair tufts on
-        # the upper surface of the scrotum.
-        if normal[2] > 0.5:
+        # Skip the top half of the scrotum (normal[1] > 0.5 means the
+        # vertex is on the side of the sac that faces the shaft) so we
+        # don't get hair tufts pointing up into the body.
+        if normal[1] > 0.5:
             continue
         direction = normal + rng.uniform(-0.2, 0.2, size=3)
         direction = direction / max(np.linalg.norm(direction), 1e-9)
-        path = create_helix_path(
-            radius=0.06, turns=2.5, length=hair_length, center=point, direction=direction
+        strand_len = float(hair_length) * float(rng.uniform(0.75, 1.15))
+        path = _random_walk_hair_path(
+            strand_len, point, direction, seed=int(strand_seed),
         )
-        hairs.append(create_tube(path, tube_radius=0.018, num_segments=4))
+        thickness = 0.018 * float(rng.uniform(0.85, 1.10))
+        hairs.append(create_tube(path, tube_radius=thickness, num_segments=4))
     if not hairs:
         return None
     hair_mesh = trimesh.util.concatenate(hairs)
@@ -612,7 +692,7 @@ def create_model(
     # 4. Smooth color blending across z (shaft <-> head <-> scrotum).
     body = color_unified_by_region(
         body, shaft_color, head_color, scrotum_color,
-        shaft_len, head_z_center, head_radius,
+        shaft_len, head_z_center, head_radius, scrotum_radius,
     )
 
     # 5. Subtle z-gradient on the shaft (tip a touch redder).
@@ -636,14 +716,26 @@ def create_model(
         body, shaft_color, _tone_intensity(avg_wrinkle), seed + 11
     )
 
-    # 9. Hair on the scrotum region (z below the shaft base).
+    # 9. Hair only on the scrotum sphere itself (below the neck — and
+    # since the scrotum hangs in -Y in model space, we filter by y).
     if hair_density > 0 and hair_length > 0:
         hair = make_hair(
             body, int(hair_density), float(hair_length),
-            seed=seed + 17, max_z=-0.2,
+            seed=seed + 17, max_y=-scrotum_radius * 0.7,
         )
         if hair is not None:
             body = trimesh.util.concatenate([body, hair])
+
+    # 9.5 Reorient for the viewer.
+    #   model:  shaft +Z (head up at +z), scrotum hanging -Y
+    #   world:  shaft +X (horizontal), scrotum -Y (still down)
+    # Rotate +π/2 about Y so model +Z → world +X (shaft becomes
+    # horizontal). The scrotum's -Y direction is on the rotation axis,
+    # so it stays as -Y (hanging straight down) in the viewer.
+    rotate_shaft_horizontal = trimesh.transformations.rotation_matrix(
+        np.pi / 2, [0, 1, 0]
+    )
+    body.apply_transform(rotate_shaft_horizontal)
 
     # 10. Skip sRGB→linear conversion. We tried it and ACES tonemap +
     # bright IBL still squished all hues to similar peach in
@@ -687,7 +779,7 @@ PRESETS = {
         # slightly deeper/redder skin). The vivid red is reserved for
         # the urethral meatus tip via apply_glans_tip_redden.
         shaft_color="#7A4218", head_color="#682E10", scrotum_color="#C89B6A",
-        shaft_wrinkle_intensity=0.06, head_wrinkle_intensity=0.04,
+        shaft_wrinkle_intensity=0.06, head_wrinkle_intensity=0.0,
         scrotum_wrinkle_intensity=0.10, wrinkle_smoothness=2.5, wrinkle_seed=42,
         hair_density=15, hair_length=0.6,
         vein_count=4, vein_radius=0.06,
@@ -707,7 +799,7 @@ PRESETS = {
         shaft_len=8, shaft_radius=1.1, head_radius=1.6, scrotum_radius=2.0,
         curvature=0.06, corona_intensity=1.0,
         shaft_color="#6E3818", head_color="#5A2410", scrotum_color="#B89070",
-        shaft_wrinkle_intensity=0.10, head_wrinkle_intensity=0.05,
+        shaft_wrinkle_intensity=0.10, head_wrinkle_intensity=0.0,
         scrotum_wrinkle_intensity=0.16, wrinkle_smoothness=2.0, wrinkle_seed=7,
         hair_density=30, hair_length=0.7,
         vein_count=8, vein_radius=0.07,
@@ -756,7 +848,7 @@ def build_ui():
 
                 with gr.Tab("Surface"):
                     shaft_wrinkle_intensity = gr.Slider(0, 0.5, value=0.06, step=0.01, label="Shaft wrinkles")
-                    head_wrinkle_intensity = gr.Slider(0, 0.5, value=0.04, step=0.01, label="Head wrinkles")
+                    head_wrinkle_intensity = gr.Slider(0, 0.5, value=0.0, step=0.01, label="Head wrinkles")
                     scrotum_wrinkle_intensity = gr.Slider(0, 0.5, value=0.10, step=0.01, label="Scrotum wrinkles")
                     wrinkle_smoothness = gr.Slider(0.1, 5, value=2.5, step=0.1, label="Wrinkle smoothness (gaussian σ)")
                     wrinkle_seed = gr.Slider(0, 1000, value=42, step=1, label="Wrinkle seed")
