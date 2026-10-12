@@ -60,9 +60,10 @@ UDD is a small toy project that generates a parametric 3D mesh from a handful
 of sliders (shaft length / radius, head, scrotum, surface wrinkles, hair, …)
 and serves it through a Gradio interface. Two entry points are included:
 
-- `diao_3d.py` — interactive **3D** version. Builds a `trimesh` mesh, applies
-  vertex-color materials and surface perturbations, optionally adds curly
-  hair strands, and exports `.glb` for the Gradio `Model3D` viewer.
+- `diao_3d.py` — interactive **3D** version. Samples a signed-distance field
+  and extracts a single watertight body with marching cubes, applies
+  per-vertex colors and surface perturbations, optionally adds hair strands,
+  and exports `.glb` for the Gradio `Model3D` viewer.
 - `diao_matplotlib.py` — older **2D** version. Renders a static PNG via
   `matplotlib`'s 3D toolkit. Kept around as a lightweight fallback.
 
@@ -76,6 +77,7 @@ This is an educational / for-fun project. See [Acknowledgments](#acknowledgments
 - [Gradio](https://www.gradio.app/) — UI + model serving
 - [trimesh](https://trimesh.org/) — mesh construction and `.glb` export
 - [NumPy](https://numpy.org/) / [SciPy](https://scipy.org/) — geometry math, gaussian wrinkle filter
+- [scikit-image](https://scikit-image.org/) — marching cubes for the SDF body
 - [Matplotlib](https://matplotlib.org/) + [Seaborn](https://seaborn.pydata.org/) — 2D version only
 
 
@@ -133,17 +135,17 @@ The 3D UI groups parameters into sections:
 
 | Group     | Parameter                  | What it does                                        |
 | --------- | -------------------------- | --------------------------------------------------- |
-| Shape     | Shaft length / radius      | Cylinder height and radius for the three shafts     |
+| Shape     | Shaft length / radius      | Length and thickness of the shaft                   |
 |           | Head radius                | Glans sphere radius                                 |
 |           | Scrotum radius             | Each testicle sphere radius                         |
 |           | Curvature                  | Bend the shaft along its length (0 = straight)      |
 |           | Corona ridge               | Adds a torus ring under the glans                   |
-| Color     | Shaft / Head / Scrotum     | Hex pickers for each part                           |
-| Surface   | Wrinkle intensity (×3)     | Per-part vertex perturbation amplitude              |
+| Color     | Shaft / Head / Scrotum     | Hex pickers, blended smoothly between regions       |
+| Surface   | Wrinkle intensity (×3)     | Per-region vertex perturbation amplitude            |
 |           | Wrinkle smoothness         | Gaussian σ smoothing the perturbations              |
 |           | Wrinkle seed               | Deterministic seed for reproducible output          |
-| Hair      | Density / length           | Number and length of helix strands on the scrotum   |
-| Veins     | Vein count / radius        | Number and thickness of winding tubes on the shaft  |
+| Hair      | Density / length           | Number and length of curly strands on the scrotum   |
+| Veins     | Vein count / thickness     | Number and thickness of raised ridges on the shaft  |
 
 #### CJK font on the 2D version
 
@@ -161,7 +163,8 @@ The script tries `PingFang SC` (macOS), `Heiti SC` / `STHeiti` (macOS),
 - [x] Gradio UI for parameter sliders
 - [x] Color pickers for each part
 - [x] Surface wrinkles (gaussian-filtered vertex displacement)
-- [x] Hair on the scrotum (helical tubes from sampled normals)
+- [x] Single watertight body (SDF + marching cubes) instead of separate primitives
+- [x] Hair on the scrotum (randomly bent strands grown from surface normals)
 - [x] Reproducible wrinkle seed
 - [x] Shaft curvature
 - [x] Corona ridge under the glans

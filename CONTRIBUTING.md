@@ -77,7 +77,7 @@ git push origin feat/your-feature-name
 
 ### 3. Open a Pull Request
 
-Open a PR against `main` (or the current default branch). Please include:
+Open a PR against `beta` (the default branch). Please include:
 
 - A short description of what the change does and why
 - Before/after screenshots if you changed rendering output
