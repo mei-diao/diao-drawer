@@ -4,19 +4,22 @@ Generates a parametric phallus mesh from a Gradio UI and exports it as
 .glb for the Model3D viewer. Sliders cover shape, color, surface
 wrinkles, optional hair, optional surface veins (raised ridges, not
 floating tubes) and a corona ridge. A few one-click presets are wired
-in.
+in, plus material packs (gold, chrome, marble, …), a Random button and
+shareable recipe codes.
 """
 
+import base64
 import json
 import os
 import re
 import struct
 import tempfile
+import zlib
 
 import gradio as gr
 import trimesh
 import numpy as np
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, map_coordinates
 from scipy.spatial import cKDTree
 from skimage.measure import marching_cubes
 
@@ -243,6 +246,138 @@ def color_unified_by_region(mesh, shaft_color, head_color, scrotum_color,
 
     rgba = np.hstack([rgb, 255 * np.ones((n, 1))]).astype(np.uint8)
     mesh.visual.vertex_colors = rgba
+    return mesh
+
+
+# --------------------------- material packs ---------------------------
+
+
+def _smooth_noise(points, seed, frequency=1.0, octaves=3, size=24):
+    """Smooth 3D noise in roughly [-1, 1] (std ≈ 0.4): a random lattice
+    read back with cubic-spline interpolation, summed over a few octaves.
+    Cheap enough to evaluate per vertex, which is all the packs need."""
+    rng = np.random.default_rng(seed)
+    points = np.asarray(points, dtype=float)
+    total = np.zeros(len(points))
+    amp, norm = 1.0, 0.0
+    for _ in range(octaves):
+        lattice = rng.uniform(-1.0, 1.0, (size, size, size))
+        coords = (points * frequency).T + size / 2.0
+        total += amp * map_coordinates(lattice, coords, order=3, mode="grid-wrap")
+        norm += amp
+        amp *= 0.5
+        frequency *= 2.0
+    return total / norm
+
+
+def _hex(color):
+    return np.array(hex_to_rgb(color), dtype=float)
+
+
+def _mix(a, b, t):
+    """Per-vertex lerp between colors a and b (each (3,) or (n, 3))."""
+    t = np.clip(t, 0.0, 1.0)[:, None]
+    return a * (1.0 - t) + b * t
+
+
+def _hsv_to_rgb(h, s, v):
+    h = (np.asarray(h, dtype=float) % 1.0) * 6.0
+    i = np.floor(h).astype(int) % 6
+    f = h - np.floor(h)
+    s = np.broadcast_to(s, h.shape)
+    v = np.broadcast_to(v, h.shape)
+    p, q, t = v * (1 - s), v * (1 - s * f), v * (1 - s * (1 - f))
+    r = np.choose(i, [v, q, p, p, t, v])
+    g = np.choose(i, [t, v, v, q, p, p])
+    b = np.choose(i, [p, p, t, v, v, q])
+    return np.stack([r, g, b], axis=1) * 255.0
+
+
+def _solid(color, jitter=0.0):
+    def pattern(p, seed):
+        rgb = np.tile(_hex(color), (len(p), 1))
+        if jitter:
+            rgb *= 1.0 + jitter * _smooth_noise(p, seed, 0.8)[:, None]
+        return rgb
+    return pattern
+
+
+def _marble(p, seed):
+    base = _mix(_hex("#F4F1EC"), _hex("#DAD4CA"), 0.5 + _smooth_noise(p, seed + 1, 0.6))
+    t = p @ np.array([0.5, 0.3, 0.9]) + 3.0 * _smooth_noise(p, seed, 0.35)
+    veins = np.exp(-(np.abs(np.sin(2.0 * t)) / 0.12) ** 2)
+    return _mix(base, _hex("#76737A"), 0.85 * veins)
+
+
+def _wood(p, seed):
+    # Growth rings around the model's long axis, wobbled by noise, plus
+    # fine grain streaks stretched along that axis.
+    r = np.hypot(p[:, 0], p[:, 1]) + 0.35 * _smooth_noise(p, seed, 0.5)
+    rings = (0.5 + 0.5 * np.sin(12.0 * r)) ** 3
+    grain = _smooth_noise(p * np.array([4.0, 4.0, 0.4]), seed + 1)
+    return _mix(_hex("#DDA56B"), _hex("#8E5427"), 0.8 * rings + 0.2 * (grain + 0.5))
+
+
+def _rainbow(p, seed):
+    z = p[:, 2]
+    hue = 0.85 * (z - z.min()) / max(np.ptp(z), 1e-6) + 0.08 * _smooth_noise(p, seed, 0.4)
+    return _hsv_to_rgb(hue, 0.75, 1.0)
+
+
+def _candy_cane(p, seed):
+    angle = np.arctan2(p[:, 1], p[:, 0])
+    stripe = 0.5 + 2.0 * np.sin(2.0 * angle + 2.4 * p[:, 2])  # soft-edged helix
+    return _mix(_hex("#FFFFFF"), _hex("#E0242C"), stripe)
+
+
+def _camo(p, seed):
+    a = _smooth_noise(p, seed, 0.45)
+    b = _smooth_noise(p, seed + 7, 0.45)
+    rgb = np.tile(_hex("#B9A97A"), (len(p), 1))  # sand
+    rgb[a > 0.05] = _hex("#6B7A3A")              # olive
+    rgb[b > 0.12] = _hex("#5A4030")              # brown
+    rgb[a > 0.30] = _hex("#36432A")              # dark green
+    return rgb
+
+
+def _galaxy(p, seed):
+    rgb = _mix(_hex("#0A0F2E"), _hex("#4C1D72"), 0.4 + 1.8 * _smooth_noise(p, seed, 0.4))
+    nebula = 3.0 * (_smooth_noise(p, seed + 3, 0.7) - 0.25)
+    rgb = _mix(rgb, _hex("#D9488F"), 0.6 * np.clip(nebula, 0.0, 1.0))
+    stars = np.random.default_rng(seed + 5).random(len(p)) < 0.015
+    rgb[stars] = 255.0
+    return rgb
+
+
+# Each pack recolors every vertex (hair included) and carries its own
+# PBR settings, which get injected into the GLB. "Original" keeps the
+# color pickers and the untouched export path.
+MATERIAL_PACKS = {
+    "Original": None,
+    "Gold": dict(pattern=_solid("#FFC75A", jitter=0.03), metallic=1.0, roughness=0.22),
+    "Chrome": dict(pattern=_solid("#F2F3F5"), metallic=1.0, roughness=0.06),
+    "Marble": dict(pattern=_marble, metallic=0.0, roughness=0.18),
+    "Wood": dict(pattern=_wood, metallic=0.0, roughness=0.6),
+    "Rainbow": dict(pattern=_rainbow, metallic=0.0, roughness=0.3),
+    "Candy cane": dict(pattern=_candy_cane, metallic=0.0, roughness=0.12),
+    "Camo": dict(pattern=_camo, metallic=0.0, roughness=0.85),
+    "Galaxy": dict(pattern=_galaxy, metallic=0.0, roughness=0.35),
+    "Neon": dict(pattern=_solid("#FF2BD6"), metallic=0.0, roughness=0.25,
+                 emissive=(0.9, 0.05, 0.6)),
+    "Chocolate": dict(pattern=_solid("#4B2716", jitter=0.06), metallic=0.0, roughness=0.3),
+}
+
+
+def apply_material_pack(mesh, pack_name, seed):
+    """Overwrite vertex colors with the pack's pattern (a no-op for
+    "Original"). Patterns are authored in sRGB and stored linear, since
+    glTF vertex colors are linear."""
+    pack = MATERIAL_PACKS.get(pack_name)
+    if pack is None:
+        return mesh
+    rgb = pack["pattern"](np.asarray(mesh.vertices, dtype=float), seed)
+    rgb = _srgb_to_linear_uint8(np.clip(rgb, 0, 255))
+    mesh.visual.vertex_colors = np.hstack([rgb, np.full((len(rgb), 1), 255, np.uint8)])
     return mesh
 
 
@@ -578,13 +713,19 @@ def _srgb_to_linear_uint8(rgb_uint8):
     return np.clip(linear * 255.0, 0, 255).astype(np.uint8)
 
 
-def _inject_skin_pbr_material(glb_bytes,
-                              metallic=0.0,
-                              roughness=0.78,
-                              base_color_factor=1.0,
-                              double_sided=True,
-                              unlit=True):
-    """Inject a glTF material so the viewer renders consistent colors.
+def _inject_pbr_material(glb_bytes,
+                         metallic=0.0,
+                         roughness=0.78,
+                         emissive=(0.0, 0.0, 0.0),
+                         base_color_factor=1.0,
+                         double_sided=True,
+                         unlit=False,
+                         name="material"):
+    """Inject a glTF material and point every primitive at it.
+
+    trimesh's vertex-color export carries no PBR parameters, so this is
+    how a material pack gets its metalness, roughness and glow; the
+    vertex colors still supply the base color.
 
     With `unlit=True` we use the standard `KHR_materials_unlit`
     extension. Why: model-viewer's default lit pipeline runs ACES
@@ -612,7 +753,7 @@ def _inject_skin_pbr_material(glb_bytes,
 
     bcf = float(base_color_factor)
     material = {
-        "name": "skin_unlit" if unlit else "skin",
+        "name": name,
         "pbrMetallicRoughness": {
             "baseColorFactor": [bcf, bcf, bcf, 1.0],
             "metallicFactor": float(metallic),
@@ -620,6 +761,8 @@ def _inject_skin_pbr_material(glb_bytes,
         },
         "doubleSided": bool(double_sided),
     }
+    if any(emissive):
+        material["emissiveFactor"] = [float(c) for c in emissive]
     if unlit:
         material["extensions"] = {"KHR_materials_unlit": {}}
         ext_used = gltf.setdefault("extensionsUsed", [])
@@ -668,6 +811,7 @@ def create_model(
     hair_density, hair_length,
     vein_count, vein_radius,
     name,
+    material_pack="Original",
 ):
     seed = int(wrinkle_seed) if wrinkle_seed is not None else 0
 
@@ -726,6 +870,10 @@ def create_model(
         if hair is not None:
             body = trimesh.util.concatenate([body, hair])
 
+    # 9.2 Material pack: recolor everything (hair included). Done in
+    # model space so stripes / rings follow the shaft axis.
+    body = apply_material_pack(body, material_pack, seed)
+
     # 9.5 Reorient for the viewer.
     #   model:  shaft +Z (head up at +z), scrotum hanging -Y
     #   world:  shaft +X (horizontal), scrotum -Y (still down)
@@ -745,9 +893,17 @@ def create_model(
 
     file_path = os.path.join(_OUTPUT_DIR, f"{sanitize_name(name)}_model.glb")
     glb_bytes = trimesh.exchange.gltf.export_glb(body)
-    # No material injection — let trimesh's default (no PBR material) be
-    # used. Useful as a baseline check to see what the viewer does
-    # without our material parameters.
+    # "Original" keeps trimesh's default (no PBR material) — the baseline
+    # the color pickers were tuned against. Packs inject their own.
+    pack = MATERIAL_PACKS.get(material_pack)
+    if pack is not None:
+        glb_bytes = _inject_pbr_material(
+            glb_bytes,
+            metallic=pack["metallic"],
+            roughness=pack["roughness"],
+            emissive=pack.get("emissive", (0.0, 0.0, 0.0)),
+            name=material_pack,
+        )
     with open(file_path, "wb") as f:
         f.write(glb_bytes)
     return file_path
@@ -756,18 +912,44 @@ def create_model(
 # ------------------------------- presets -------------------------------
 
 
+# create_model's positional parameters, in order. The UI inputs,
+# presets, the Random button and recipe codes all go through this list.
+PARAM_NAMES = [
+    "shaft_len", "shaft_radius", "head_radius", "scrotum_radius",
+    "curvature", "corona_intensity",
+    "shaft_color", "head_color", "scrotum_color",
+    "shaft_wrinkle_intensity", "head_wrinkle_intensity", "scrotum_wrinkle_intensity",
+    "wrinkle_smoothness", "wrinkle_seed",
+    "hair_density", "hair_length",
+    "vein_count", "vein_radius",
+    "name", "material_pack",
+]
+
+# (min, max, step) for every slider — shared by the UI and by recipe
+# validation, so a pasted code can never push a slider out of range.
+SLIDERS = {
+    "shaft_len": (1, 20, 1),
+    "shaft_radius": (0.5, 5, 0.1),
+    "head_radius": (0.5, 5, 0.1),
+    "scrotum_radius": (1, 5, 0.1),
+    "curvature": (-0.4, 0.4, 0.01),
+    "corona_intensity": (0, 2, 0.05),
+    "shaft_wrinkle_intensity": (0, 0.5, 0.01),
+    "head_wrinkle_intensity": (0, 0.5, 0.01),
+    "scrotum_wrinkle_intensity": (0, 0.5, 0.01),
+    "wrinkle_smoothness": (0.1, 5, 0.1),
+    "wrinkle_seed": (0, 1000, 1),
+    "hair_density": (0, 100, 1),
+    "hair_length": (0.0, 3.0, 0.05),
+    "vein_count": (0, 20, 1),
+    "vein_radius": (0.01, 0.20, 0.005),
+}
+COLOR_PARAMS = ("shaft_color", "head_color", "scrotum_color")
+
+
 def _preset_args(preset_name):
     p = PRESETS[preset_name]
-    return [
-        p["shaft_len"], p["shaft_radius"], p["head_radius"], p["scrotum_radius"],
-        p["curvature"], p["corona_intensity"],
-        p["shaft_color"], p["head_color"], p["scrotum_color"],
-        p["shaft_wrinkle_intensity"], p["head_wrinkle_intensity"], p["scrotum_wrinkle_intensity"],
-        p["wrinkle_smoothness"], p["wrinkle_seed"],
-        p["hair_density"], p["hair_length"],
-        p["vein_count"], p["vein_radius"],
-        p["name"],
-    ]
+    return [p[k] for k in PARAM_NAMES]
 
 
 PRESETS = {
@@ -783,7 +965,7 @@ PRESETS = {
         scrotum_wrinkle_intensity=0.10, wrinkle_smoothness=2.5, wrinkle_seed=42,
         hair_density=15, hair_length=0.6,
         vein_count=4, vein_radius=0.06,
-        name="diao",
+        name="diao", material_pack="Original",
     ),
     "Smooth": dict(
         shaft_len=6, shaft_radius=1.0, head_radius=1.4, scrotum_radius=1.8,
@@ -793,7 +975,7 @@ PRESETS = {
         scrotum_wrinkle_intensity=0.0, wrinkle_smoothness=2.5, wrinkle_seed=0,
         hair_density=0, hair_length=0.5,
         vein_count=0, vein_radius=0.05,
-        name="smooth",
+        name="smooth", material_pack="Original",
     ),
     "Realistic": dict(
         shaft_len=8, shaft_radius=1.1, head_radius=1.6, scrotum_radius=2.0,
@@ -803,7 +985,7 @@ PRESETS = {
         scrotum_wrinkle_intensity=0.16, wrinkle_smoothness=2.0, wrinkle_seed=7,
         hair_density=30, hair_length=0.7,
         vein_count=8, vein_radius=0.07,
-        name="realistic",
+        name="realistic", material_pack="Original",
     ),
     "Cartoon": dict(
         shaft_len=5, shaft_radius=1.4, head_radius=2.0, scrotum_radius=2.2,
@@ -813,19 +995,116 @@ PRESETS = {
         scrotum_wrinkle_intensity=0.0, wrinkle_smoothness=2.5, wrinkle_seed=0,
         hair_density=0, hair_length=0.5,
         vein_count=0, vein_radius=0.04,
-        name="cartoon",
+        name="cartoon", material_pack="Original",
     ),
 }
+
+
+# ------------------------- random & recipe codes -------------------------
+
+
+def _snap(key, x):
+    lo, hi, step = SLIDERS[key]
+    return round(float(np.clip(round(x / step) * step, lo, hi)), 4)
+
+
+def random_args(name):
+    """A random but sensible parameter set (narrower than the slider
+    ranges), a random material pack, and one of the presets' palettes.
+    Keeps the current name."""
+    rng = np.random.default_rng()
+    palette = PRESETS[str(rng.choice(list(PRESETS)))]
+    ranges = dict(
+        shaft_len=(4, 14), shaft_radius=(0.7, 1.6), head_radius=(1.0, 2.4),
+        scrotum_radius=(1.3, 2.8), curvature=(-0.15, 0.15), corona_intensity=(0.0, 1.2),
+        shaft_wrinkle_intensity=(0.0, 0.15), head_wrinkle_intensity=(0.0, 0.0),
+        scrotum_wrinkle_intensity=(0.0, 0.2), wrinkle_smoothness=(1.5, 3.5),
+        wrinkle_seed=(0, 1000), hair_density=(0, 40), hair_length=(0.3, 1.0),
+        vein_count=(0, 8), vein_radius=(0.03, 0.09),
+    )
+    values = {k: _snap(k, rng.uniform(lo, hi)) for k, (lo, hi) in ranges.items()}
+    values.update({k: palette[k] for k in COLOR_PARAMS})
+    values["name"] = name
+    values["material_pack"] = str(rng.choice(list(MATERIAL_PACKS)))
+    return [values[k] for k in PARAM_NAMES]
+
+
+_RECIPE_PREFIX = "UDD1-"
+
+
+def encode_recipe(*values):
+    """All parameters → a copy-pasteable code (raw-deflated JSON in
+    base64url, ~300 chars — half the size of plain base64 JSON)."""
+    raw = json.dumps(dict(zip(PARAM_NAMES, values)), separators=(",", ":"),
+                     ensure_ascii=False).encode("utf-8")
+    deflate = zlib.compressobj(9, zlib.DEFLATED, -15)
+    packed = deflate.compress(raw) + deflate.flush()
+    return _RECIPE_PREFIX + base64.urlsafe_b64encode(packed).decode("ascii").rstrip("=")
+
+
+def decode_recipe(code):
+    """Recipe code → parameter list. Anything missing or invalid falls
+    back to the Default preset; numbers are clamped to slider ranges."""
+    code = (code or "").strip()
+    if code.startswith(_RECIPE_PREFIX):
+        code = code[len(_RECIPE_PREFIX):]
+    try:
+        # Size caps: real codes are ~300 chars / ~450 bytes inflated; the
+        # caps stop a crafted "deflate bomb" from eating the server's RAM.
+        if len(code) > 4096:
+            raise ValueError("code too long")
+        packed = base64.urlsafe_b64decode(code + "=" * (-len(code) % 4))
+        inflate = zlib.decompressobj(-15)
+        raw = inflate.decompress(packed, 65536)
+        if inflate.unconsumed_tail:
+            raise ValueError("inflates past the size cap")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("not a JSON object")
+    except (ValueError, zlib.error):  # bad base64 / deflate / UTF-8 / JSON
+        raise gr.Error("That doesn't look like a UDD recipe code.") from None
+
+    default = PRESETS["Default"]
+    values = {}
+    for key in PARAM_NAMES:
+        value = data.get(key, default[key])
+        if key in SLIDERS:
+            try:
+                value = _snap(key, float(value))
+            except (TypeError, ValueError):
+                value = default[key]
+        elif key in COLOR_PARAMS:
+            if not re.fullmatch(r"#[0-9A-Fa-f]{6}", str(value)):
+                value = default[key]
+        elif key == "material_pack":
+            if value not in MATERIAL_PACKS:
+                value = "Original"
+        elif key == "name":
+            value = str(value)[:64]
+        values[key] = value
+    return [values[k] for k in PARAM_NAMES]
+
+
+def generate(*values):
+    """UI entry point: the model plus the recipe code that rebuilds it."""
+    return create_model(*values), encode_recipe(*values)
 
 
 # --------------------------------- UI ----------------------------------
 
 
+def _slider(key, label):
+    lo, hi, step = SLIDERS[key]
+    return gr.Slider(lo, hi, value=PRESETS["Default"][key], step=step, label=label)
+
+
 def build_ui():
+    default = PRESETS["Default"]
     with gr.Blocks(title="Ultimate DIAO Drawer (UDD)") as demo:
         gr.Markdown(
             "# Ultimate DIAO Drawer (UDD)\n"
-            "Tweak parameters → click **Generate** (or use a preset).  "
+            "Tweak parameters → click **Generate** (or use a preset, a "
+            "material pack, or 🎲 Random).  "
             "Sliders auto-update on release; color pickers and the name "
             "field require an explicit Generate to keep the UI snappy."
         )
@@ -833,36 +1112,44 @@ def build_ui():
         with gr.Row():
             with gr.Column(scale=1):
                 with gr.Tab("Shape"):
-                    shaft_len = gr.Slider(1, 20, value=7, step=1, label="Shaft length")
-                    shaft_radius = gr.Slider(0.5, 5, value=1.0, step=0.1, label="Shaft radius")
-                    head_radius = gr.Slider(0.5, 5, value=1.5, step=0.1, label="Head radius")
-                    scrotum_radius = gr.Slider(1, 5, value=2.0, step=0.1, label="Scrotum radius")
-                    curvature = gr.Slider(-0.4, 0.4, value=0.0, step=0.01, label="Curvature (bend along +y)")
-                    corona_intensity = gr.Slider(0, 2, value=0.6, step=0.05, label="Corona ridge")
+                    shaft_len = _slider("shaft_len", "Shaft length")
+                    shaft_radius = _slider("shaft_radius", "Shaft radius")
+                    head_radius = _slider("head_radius", "Head radius")
+                    scrotum_radius = _slider("scrotum_radius", "Scrotum radius")
+                    curvature = _slider("curvature", "Curvature (bend along +y)")
+                    corona_intensity = _slider("corona_intensity", "Corona ridge")
 
                 with gr.Tab("Color"):
-                    shaft_color = gr.ColorPicker(label="Shaft color", value="#7A4218")
-                    head_color = gr.ColorPicker(label="Head color", value="#682E10")
-                    scrotum_color = gr.ColorPicker(label="Scrotum color", value="#C89B6A")
+                    shaft_color = gr.ColorPicker(label="Shaft color", value=default["shaft_color"])
+                    head_color = gr.ColorPicker(label="Head color", value=default["head_color"])
+                    scrotum_color = gr.ColorPicker(label="Scrotum color", value=default["scrotum_color"])
                     gr.Markdown("_Click **Generate** below to apply colors._")
 
+                with gr.Tab("Material"):
+                    material_pack = gr.Dropdown(
+                        list(MATERIAL_PACKS),
+                        value=default["material_pack"],
+                        label="Material pack",
+                        info="Original uses the Color tab; every other pack replaces those colors.",
+                    )
+
                 with gr.Tab("Surface"):
-                    shaft_wrinkle_intensity = gr.Slider(0, 0.5, value=0.06, step=0.01, label="Shaft wrinkles")
-                    head_wrinkle_intensity = gr.Slider(0, 0.5, value=0.0, step=0.01, label="Head wrinkles")
-                    scrotum_wrinkle_intensity = gr.Slider(0, 0.5, value=0.10, step=0.01, label="Scrotum wrinkles")
-                    wrinkle_smoothness = gr.Slider(0.1, 5, value=2.5, step=0.1, label="Wrinkle smoothness (gaussian σ)")
-                    wrinkle_seed = gr.Slider(0, 1000, value=42, step=1, label="Wrinkle seed")
+                    shaft_wrinkle_intensity = _slider("shaft_wrinkle_intensity", "Shaft wrinkles")
+                    head_wrinkle_intensity = _slider("head_wrinkle_intensity", "Head wrinkles")
+                    scrotum_wrinkle_intensity = _slider("scrotum_wrinkle_intensity", "Scrotum wrinkles")
+                    wrinkle_smoothness = _slider("wrinkle_smoothness", "Wrinkle smoothness (gaussian σ)")
+                    wrinkle_seed = _slider("wrinkle_seed", "Wrinkle seed")
 
                 with gr.Tab("Hair"):
-                    hair_density = gr.Slider(0, 100, value=15, step=1, label="Hair density")
-                    hair_length = gr.Slider(0.0, 3.0, value=0.6, step=0.05, label="Hair length")
+                    hair_density = _slider("hair_density", "Hair density")
+                    hair_length = _slider("hair_length", "Hair length")
 
                 with gr.Tab("Veins"):
-                    vein_count = gr.Slider(0, 20, value=4, step=1, label="Vein count")
-                    vein_radius = gr.Slider(0.01, 0.20, value=0.06, step=0.005, label="Vein thickness")
+                    vein_count = _slider("vein_count", "Vein count")
+                    vein_radius = _slider("vein_radius", "Vein thickness")
                     gr.Markdown("_Veins are now raised ridges on the shaft surface, not floating tubes._")
 
-                name = gr.Textbox(label="Name", value="diao")
+                name = gr.Textbox(label="Name", value=default["name"])
 
                 with gr.Row():
                     btn_generate = gr.Button("Generate", variant="primary")
@@ -873,6 +1160,16 @@ def build_ui():
                     btn_smooth = gr.Button("Smooth")
                     btn_realistic = gr.Button("Realistic")
                     btn_cartoon = gr.Button("Cartoon")
+                    btn_random = gr.Button("🎲 Random")
+
+                with gr.Row():
+                    recipe = gr.Textbox(
+                        label="Recipe code",
+                        value=encode_recipe(*_preset_args("Default")),
+                        info="Send this to a friend, or paste one and click Load to rebuild that model.",
+                        scale=4,
+                    )
+                    btn_load = gr.Button("Load", scale=1)
 
             with gr.Column(scale=2):
                 # Pre-generate the Default mesh so the viewer has something
@@ -895,8 +1192,9 @@ def build_ui():
             wrinkle_smoothness, wrinkle_seed,
             hair_density, hair_length,
             vein_count, vein_radius,
-            name,
+            name, material_pack,
         ]
+        outputs = [output, recipe]
 
         # Slider auto-update on release (drag freely, only re-render when you let go).
         slider_inputs = [
@@ -908,10 +1206,14 @@ def build_ui():
             vein_count, vein_radius,
         ]
         for s in slider_inputs:
-            s.release(create_model, inputs=all_inputs, outputs=output)
+            s.release(generate, inputs=all_inputs, outputs=outputs)
 
         # Manual Generate button — also wired by preset buttons via .then().
-        btn_generate.click(create_model, inputs=all_inputs, outputs=output)
+        btn_generate.click(generate, inputs=all_inputs, outputs=outputs)
+
+        # Picking a pack re-renders straight away. `.input` (not `.change`)
+        # so presets / Random / Load setting the dropdown don't render twice.
+        material_pack.input(generate, inputs=all_inputs, outputs=outputs)
 
         for btn, key in [
             (btn_default, "Default"),
@@ -921,7 +1223,15 @@ def build_ui():
         ]:
             btn.click(
                 lambda k=key: _preset_args(k), outputs=all_inputs
-            ).then(create_model, inputs=all_inputs, outputs=output)
+            ).then(generate, inputs=all_inputs, outputs=outputs)
+
+        btn_random.click(random_args, inputs=name, outputs=all_inputs).then(
+            generate, inputs=all_inputs, outputs=outputs
+        )
+        # .success: a bad code shows an error and leaves the model alone.
+        btn_load.click(decode_recipe, inputs=recipe, outputs=all_inputs).success(
+            generate, inputs=all_inputs, outputs=outputs
+        )
 
     return demo
 
