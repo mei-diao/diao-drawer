@@ -1000,6 +1000,28 @@ PRESETS = {
 }
 
 
+def _skin(base, **changes):
+    return dict(PRESETS[base], **changes)
+
+
+# One-click skins: a material pack plus shape tweaks that suit it. They
+# are ordinary presets; SKIN_BUTTONS only adds the emoji for the UI.
+PRESETS.update({
+    "Trophy": _skin("Smooth", material_pack="Gold", corona_intensity=0.8, name="trophy"),
+    "Statue": _skin("Smooth", material_pack="Marble", name="statue"),
+    "Robot": _skin("Smooth", material_pack="Chrome", vein_count=10, vein_radius=0.08,
+                   name="robot"),
+    "Galaxy": _skin("Default", material_pack="Galaxy", hair_density=0, curvature=0.08,
+                    name="galaxy"),
+    "Candy": _skin("Cartoon", material_pack="Candy cane", curvature=0.4, name="candy"),
+    "Rainbow": _skin("Cartoon", material_pack="Rainbow", name="rainbow"),
+})
+SKIN_BUTTONS = {
+    "Trophy": "🏆", "Statue": "🗿", "Robot": "🤖",
+    "Galaxy": "🌌", "Candy": "🍭", "Rainbow": "🌈",
+}
+
+
 # ------------------------- random & recipe codes -------------------------
 
 
@@ -1013,7 +1035,8 @@ def random_args(name):
     ranges), a random material pack, and one of the presets' palettes.
     Keeps the current name."""
     rng = np.random.default_rng()
-    palette = PRESETS[str(rng.choice(list(PRESETS)))]
+    palettes = [k for k, p in PRESETS.items() if p["material_pack"] == "Original"]
+    palette = PRESETS[str(rng.choice(palettes))]
     ranges = dict(
         shaft_len=(4, 14), shaft_radius=(0.7, 1.6), head_radius=(1.0, 2.4),
         scrotum_radius=(1.3, 2.8), curvature=(-0.15, 0.15), corona_intensity=(0.0, 1.2),
@@ -1162,6 +1185,16 @@ def build_ui():
                     btn_cartoon = gr.Button("Cartoon")
                     btn_random = gr.Button("🎲 Random")
 
+                gr.Markdown("**Skins:**")
+                skin_buttons = {}
+                skin_names = list(SKIN_BUTTONS)
+                for row_start in range(0, len(skin_names), 3):
+                    with gr.Row():
+                        for key in skin_names[row_start:row_start + 3]:
+                            skin_buttons[key] = gr.Button(
+                                f"{SKIN_BUTTONS[key]} {key}", min_width=0
+                            )
+
                 with gr.Row():
                     recipe = gr.Textbox(
                         label="Recipe code",
@@ -1220,6 +1253,7 @@ def build_ui():
             (btn_smooth, "Smooth"),
             (btn_realistic, "Realistic"),
             (btn_cartoon, "Cartoon"),
+            *[(b, k) for k, b in skin_buttons.items()],
         ]:
             btn.click(
                 lambda k=key: _preset_args(k), outputs=all_inputs
