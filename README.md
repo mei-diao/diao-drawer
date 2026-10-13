@@ -115,9 +115,30 @@ python diao_3d.py
 ```
 
 Then open the URL Gradio prints (default `http://127.0.0.1:7860`). The UI
-exposes a set of grouped controls for shape, color, surface, hair, optional
-veins, and a couple of one-click presets. The generated `.glb` is rendered
-in-page and can be downloaded.
+exposes a set of grouped controls for shape, color, material, surface, hair,
+optional veins, a few one-click presets and a 🎲 **Random** button. The
+generated `.glb` is rendered in-page and can be downloaded.
+
+#### Material packs
+
+The **Material** tab swaps the whole look in one click. `Original` keeps the
+colors from the Color tab; every other pack replaces them with its own
+pattern and sets its own metalness / roughness (and glow, for Neon):
+
+`Gold` · `Chrome` · `Marble` · `Wood` · `Rainbow` · `Candy cane` · `Camo` ·
+`Galaxy` · `Neon` · `Chocolate`
+
+Packs are plain functions in `diao_3d.py` (`MATERIAL_PACKS`): a pattern that
+colors each vertex, plus the PBR numbers injected into the `.glb`. Adding one
+is a few lines.
+
+#### Recipe codes
+
+Every render also produces a **Recipe code** (`UDD1-…`) under the presets —
+all the parameters, compressed into one string. Send it to a friend; they
+paste it into the same box and click **Load** to get the identical model.
+Codes are validated on load: out-of-range numbers are clamped and anything
+unknown falls back to the Default preset.
 
 ### 2D version (`diao_matplotlib.py`)
 
@@ -141,6 +162,7 @@ The 3D UI groups parameters into sections:
 |           | Curvature                  | Bend the shaft along its length (0 = straight)      |
 |           | Corona ridge               | Adds a torus ring under the glans                   |
 | Color     | Shaft / Head / Scrotum     | Hex pickers, blended smoothly between regions       |
+| Material  | Material pack              | `Original` or one of the packs above                |
 | Surface   | Wrinkle intensity (×3)     | Per-region vertex perturbation amplitude            |
 |           | Wrinkle smoothness         | Gaussian σ smoothing the perturbations              |
 |           | Wrinkle seed               | Deterministic seed for reproducible output          |
@@ -170,6 +192,9 @@ The script tries `PingFang SC` (macOS), `Heiti SC` / `STHeiti` (macOS),
 - [x] Corona ridge under the glans
 - [x] Surface veins on the shaft
 - [x] One-click presets
+- [x] Material packs (gold, chrome, marble, wood, rainbow, …)
+- [x] 🎲 Random button
+- [x] Shareable recipe codes
 - [ ] Texture-based skin (instead of flat vertex color)
 - [ ] Real-time WebGL preview without round-tripping `.glb`
 - [ ] Natural-language-driven generation
