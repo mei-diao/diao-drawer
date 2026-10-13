@@ -134,6 +134,12 @@ Packs are plain functions in `diao_3d.py` (`MATERIAL_PACKS`): a pattern that
 colors each vertex, plus the PBR numbers injected into the `.glb`. Adding one
 is a few lines.
 
+The **Themes** buttons under the presets are one-click combos of a pack and
+a shape that suits it: 🏆 Trophy (gold), 🗿 Statue (marble), 🤖 Robot
+(chrome, with raised "cables"), 🌌 Galaxy, 🍭 Candy (candy cane, hooked) and
+🌈 Rainbow. Each one is a normal entry in `PRESETS`, built from an existing
+preset with `_theme(base, **changes)`; themes always use skin pack `None`.
+
 #### Skin packs
 
 The **Texture** tab swaps the flat vertex colors for baked textures. The body
@@ -215,6 +221,7 @@ The script tries `PingFang SC` (macOS), `Heiti SC` / `STHeiti` (macOS),
 - [x] Material packs (gold, chrome, marble, wood, rainbow, …)
 - [x] 🎲 Random button
 - [x] Shareable recipe codes
+- [x] One-click theme presets (Trophy, Statue, Robot, Galaxy, Candy, Rainbow)
 - [x] Texture-based skin packs (instead of flat vertex color)
 - [ ] Real-time WebGL preview without round-tripping `.glb`
 - [ ] Natural-language-driven generation

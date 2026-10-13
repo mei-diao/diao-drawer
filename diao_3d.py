@@ -1578,6 +1578,30 @@ PRESETS = {
 }
 
 
+def _theme(base, **changes):
+    # Themes are flat material looks, so they pin skin_pack to "None"
+    # rather than inheriting whatever skin pack the base preset uses.
+    return {**PRESETS[base], "skin_pack": "None", **changes}
+
+
+# One-click themes: a material pack plus shape tweaks that suit it. They
+# are ordinary presets; THEME_BUTTONS only adds the emoji for the UI.
+PRESETS.update({
+    "Trophy": _theme("Smooth", material_pack="Gold", corona_intensity=0.8, name="trophy"),
+    "Statue": _theme("Smooth", material_pack="Marble", name="statue"),
+    "Robot": _theme("Smooth", material_pack="Chrome", vein_count=10, vein_radius=0.08,
+                    name="robot"),
+    "Galaxy": _theme("Default", material_pack="Galaxy", hair_density=0, curvature=0.08,
+                     name="galaxy"),
+    "Candy": _theme("Cartoon", material_pack="Candy cane", curvature=0.4, name="candy"),
+    "Rainbow": _theme("Cartoon", material_pack="Rainbow", name="rainbow"),
+})
+THEME_BUTTONS = {
+    "Trophy": "🏆", "Statue": "🗿", "Robot": "🤖",
+    "Galaxy": "🌌", "Candy": "🍭", "Rainbow": "🌈",
+}
+
+
 # ------------------------- random & recipe codes -------------------------
 
 
@@ -1591,7 +1615,8 @@ def random_args(name):
     ranges), a random material and skin pack, and one of the presets'
     palettes. Keeps the current name."""
     rng = np.random.default_rng()
-    palette = PRESETS[str(rng.choice(list(PRESETS)))]
+    palettes = [k for k, p in PRESETS.items() if p["material_pack"] == "Original"]
+    palette = PRESETS[str(rng.choice(palettes))]
     ranges = dict(
         shaft_len=(4, 14), shaft_radius=(0.7, 1.6), head_radius=(1.0, 2.4),
         scrotum_radius=(1.3, 2.8), curvature=(-0.15, 0.15), corona_intensity=(0.0, 1.2),
@@ -1754,6 +1779,16 @@ def build_ui():
                     btn_cartoon = gr.Button("Cartoon")
                     btn_random = gr.Button("🎲 Random")
 
+                gr.Markdown("**Themes:**")
+                theme_buttons = {}
+                theme_names = list(THEME_BUTTONS)
+                for row_start in range(0, len(theme_names), 3):
+                    with gr.Row():
+                        for key in theme_names[row_start:row_start + 3]:
+                            theme_buttons[key] = gr.Button(
+                                f"{THEME_BUTTONS[key]} {key}", min_width=0
+                            )
+
                 with gr.Row():
                     recipe = gr.Textbox(
                         label="Recipe code",
@@ -1813,6 +1848,7 @@ def build_ui():
             (btn_smooth, "Smooth"),
             (btn_realistic, "Realistic"),
             (btn_cartoon, "Cartoon"),
+            *[(b, k) for k, b in theme_buttons.items()],
         ]:
             btn.click(
                 lambda k=key: _preset_args(k), outputs=all_inputs
