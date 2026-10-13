@@ -62,8 +62,9 @@ and serves it through a Gradio interface. Two entry points are included:
 
 - `diao_3d.py` — interactive **3D** version. Samples a signed-distance field
   and extracts a single watertight body with marching cubes, applies
-  per-vertex colors and surface perturbations, optionally adds hair strands,
-  and exports `.glb` for the Gradio `Model3D` viewer.
+  per-vertex colors and surface perturbations, optionally adds hair strands
+  and bakes a skin pack into textures, and exports `.glb` for the Gradio
+  `Model3D` viewer.
 - `diao_matplotlib.py` — older **2D** version. Renders a static PNG via
   `matplotlib`'s 3D toolkit. Kept around as a lightweight fallback.
 
@@ -78,6 +79,7 @@ This is an educational / for-fun project. See [Acknowledgments](#acknowledgments
 - [trimesh](https://trimesh.org/) — mesh construction and `.glb` export
 - [NumPy](https://numpy.org/) / [SciPy](https://scipy.org/) — geometry math, gaussian wrinkle filter
 - [scikit-image](https://scikit-image.org/) — marching cubes for the SDF body
+- [Pillow](https://python-pillow.org/) — encoding the skin-pack textures
 - [Matplotlib](https://matplotlib.org/) + [Seaborn](https://seaborn.pydata.org/) — 2D version only
 
 
@@ -115,9 +117,9 @@ python diao_3d.py
 ```
 
 Then open the URL Gradio prints (default `http://127.0.0.1:7860`). The UI
-exposes a set of grouped controls for shape, color, material, surface, hair,
-optional veins, a few one-click presets and a 🎲 **Random** button. The
-generated `.glb` is rendered in-page and can be downloaded.
+exposes a set of grouped controls for shape, color, material, texture,
+surface, hair, optional veins, a few one-click presets and a 🎲 **Random**
+button. The generated `.glb` is rendered in-page and can be downloaded.
 
 #### Material packs
 
@@ -131,6 +133,23 @@ pattern and sets its own metalness / roughness (and glow, for Neon):
 Packs are plain functions in `diao_3d.py` (`MATERIAL_PACKS`): a pattern that
 colors each vertex, plus the PBR numbers injected into the `.glb`. Adding one
 is a few lines.
+
+#### Skin packs
+
+The **Texture** tab swaps the flat vertex colors for baked textures. The body
+gets a UV atlas, and every texel is rendered from procedural skin layers —
+mottling, veins under the skin, creases (rings around the shaft, rugae on the
+scrotum), follicles, freckles and fine grain — into albedo, normal and
+roughness maps embedded in the `.glb`:
+
+`None` (flat vertex colors, as before) · `Natural` · `Silky` · `Weathered` ·
+`Freckled` · `Goosebumps`
+
+Skin packs take their base tone from the Color tab. With a material pack other
+than `Original`, only the skin's relief carries over — painted skin, or a cast.
+Packs are dicts of layer strengths in `diao_3d.py` (`SKIN_PACKS`), so adding
+one is a single line. The first render of a new shape takes about a second
+(UV atlas + bake); changes that keep the shape reuse it.
 
 #### Recipe codes
 
@@ -163,6 +182,7 @@ The 3D UI groups parameters into sections:
 |           | Corona ridge               | Adds a torus ring under the glans                   |
 | Color     | Shaft / Head / Scrotum     | Hex pickers, blended smoothly between regions       |
 | Material  | Material pack              | `Original` or one of the packs above                |
+| Texture   | Skin pack                  | `None` (flat color) or a baked skin texture pack    |
 | Surface   | Wrinkle intensity (×3)     | Per-region vertex perturbation amplitude            |
 |           | Wrinkle smoothness         | Gaussian σ smoothing the perturbations              |
 |           | Wrinkle seed               | Deterministic seed for reproducible output          |
@@ -195,7 +215,7 @@ The script tries `PingFang SC` (macOS), `Heiti SC` / `STHeiti` (macOS),
 - [x] Material packs (gold, chrome, marble, wood, rainbow, …)
 - [x] 🎲 Random button
 - [x] Shareable recipe codes
-- [ ] Texture-based skin (instead of flat vertex color)
+- [x] Texture-based skin packs (instead of flat vertex color)
 - [ ] Real-time WebGL preview without round-tripping `.glb`
 - [ ] Natural-language-driven generation
 

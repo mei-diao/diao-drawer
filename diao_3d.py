@@ -4,11 +4,13 @@ Generates a parametric phallus mesh from a Gradio UI and exports it as
 .glb for the Model3D viewer. Sliders cover shape, color, surface
 wrinkles, optional hair, optional surface veins (raised ridges, not
 floating tubes) and a corona ridge. A few one-click presets are wired
-in, plus material packs (gold, chrome, marble, …), a Random button and
-shareable recipe codes.
+in, plus material packs (gold, chrome, marble, …), texture-based skin
+packs, a Random button and shareable recipe codes.
 """
 
 import base64
+import functools
+import io
 import json
 import os
 import re
@@ -19,7 +21,11 @@ import zlib
 import gradio as gr
 import trimesh
 import numpy as np
-from scipy.ndimage import gaussian_filter, map_coordinates
+from numpy.lib.stride_tricks import sliding_window_view
+from PIL import Image
+from scipy.ndimage import distance_transform_edt, gaussian_filter, map_coordinates
+from scipy.sparse import coo_matrix
+from scipy.sparse.csgraph import connected_components
 from scipy.spatial import cKDTree
 from skimage.measure import marching_cubes
 
@@ -748,7 +754,6 @@ def _inject_pbr_material(glb_bytes,
     # binary chunk follows the JSON chunk
     bin_offset = 20 + json_len
     bin_len = struct.unpack("<I", glb_bytes[bin_offset:bin_offset + 4])[0]
-    bin_type = glb_bytes[bin_offset + 4:bin_offset + 8]
     bin_data = glb_bytes[bin_offset + 8:bin_offset + 8 + bin_len]
 
     bcf = float(base_color_factor)
@@ -775,24 +780,589 @@ def _inject_pbr_material(glb_bytes,
     for m in gltf.get("meshes", []):
         for p in m.get("primitives", []):
             p["material"] = mat_idx
+    return _pack_glb(gltf, bin_data)
 
-    new_json = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
-    # pad json chunk to 4-byte boundary with spaces
-    pad = (4 - (len(new_json) % 4)) % 4
-    new_json += b" " * pad
 
-    total = 12 + 8 + len(new_json) + 8 + len(bin_data)
-    out = bytearray()
-    out += b"glTF"
-    out += struct.pack("<I", 2)
-    out += struct.pack("<I", total)
-    out += struct.pack("<I", len(new_json))
-    out += b"JSON"
-    out += new_json
-    out += struct.pack("<I", len(bin_data))
-    out += bin_type
-    out += bin_data
-    return bytes(out)
+def _pack_glb(gltf, bin_data):
+    """glTF JSON + binary buffer → .glb bytes. The JSON chunk is padded
+    to a 4-byte boundary with spaces, the binary chunk with zeros."""
+    json_chunk = json.dumps(gltf, separators=(",", ":")).encode("utf-8")
+    json_chunk += b" " * (-len(json_chunk) % 4)
+    bin_data = bytes(bin_data) + b"\0" * (-len(bin_data) % 4)
+    total = 12 + 8 + len(json_chunk) + 8 + len(bin_data)
+    return (
+        struct.pack("<4sII", b"glTF", 2, total)
+        + struct.pack("<I4s", len(json_chunk), b"JSON") + json_chunk
+        + struct.pack("<I4s", len(bin_data), b"BIN\0") + bin_data
+    )
+
+
+# ------------------------------ skin packs ------------------------------
+#
+# A skin pack swaps the flat per-vertex color for baked textures: the body
+# gets a UV atlas (see "texture baking" below) and every texel is rendered
+# from the procedural layers in `_skin_layers` — mottling, veins under the
+# skin, creases, follicles, freckles, fine grain — into albedo, normal and
+# roughness maps. A pack is just a strength for each layer.
+
+
+SKIN_PACKS = {
+    "None": None,
+    "Natural": dict(mottle=1.0, veins=0.6, creases=1.0, follicles=1.0,
+                    freckles=0.0, goosebumps=0.0, grain=1.0, shine=0.0),
+    "Silky": dict(mottle=0.4, veins=0.3, creases=0.25, follicles=0.3,
+                  freckles=0.0, goosebumps=0.0, grain=0.3, shine=0.16),
+    "Weathered": dict(mottle=2.0, veins=1.0, creases=2.5, follicles=1.4,
+                      freckles=0.35, goosebumps=0.0, grain=2.2, shine=-0.12),
+    "Freckled": dict(mottle=0.9, veins=0.4, creases=0.8, follicles=0.8,
+                     freckles=1.0, goosebumps=0.0, grain=1.0, shine=0.0),
+    "Goosebumps": dict(mottle=0.8, veins=0.5, creases=1.2, follicles=1.2,
+                       freckles=0.0, goosebumps=1.0, grain=1.0, shine=-0.05),
+}
+
+
+def _smoothstep(edge0, edge1, x):
+    t = np.clip((x - edge0) / (edge1 - edge0), 0.0, 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+@functools.lru_cache(maxsize=1)
+def _noise_lattice(size=64):
+    """The random lattice every `_detail_noise` call reads: gaussian-
+    smoothed so trilinear reads look smooth, scaled to unit variance."""
+    rng = np.random.default_rng(1)
+    lattice = gaussian_filter(rng.normal(size=(size, size, size)), 1.0, mode="wrap")
+    return (lattice / lattice.std()).astype(np.float32)
+
+
+def _random_rotation(rng):
+    q, r = np.linalg.qr(rng.normal(size=(3, 3)))
+    q *= np.sign(np.diag(r))
+    return q if np.linalg.det(q) > 0 else -q
+
+
+def _detail_noise(points, scale, seed):
+    """Unit-variance 3D noise with blobs about `scale` model units across.
+    `_smooth_noise` is too slow for ~1M texels, so this reads the shared
+    lattice trilinearly — randomly rotated and offset per seed, which
+    hides both the lattice axes and its repeats."""
+    lattice = _noise_lattice()
+    rng = np.random.default_rng(seed)
+    coords = points @ _random_rotation(rng) * (2.5 / scale) + rng.uniform(0, len(lattice), 3)
+    return map_coordinates(lattice, coords.T, order=1, mode="grid-wrap")
+
+
+def _skin_regions(points, shaft_len, shaft_radius, head_radius, scrotum_radius):
+    """Soft (shaft, head, scrotum) weights per point, by whichever part of
+    the SDF (same primitives as `_phallus_sdf`) the point is closest to."""
+    shaft = _sdf_capsule(points, [0, 0, 0], [0, 0, shaft_len], shaft_radius * 1.5)
+    head = _sdf_sphere(points, [0, 0, shaft_len + head_radius * 0.4], head_radius)
+    sx, sy, sz = scrotum_radius / 1.2, -scrotum_radius * 1.1, -shaft_radius * 0.4
+    scrotum = np.minimum(
+        _sdf_sphere(points, [-sx, sy, sz], scrotum_radius),
+        _sdf_sphere(points, [sx, sy, sz], scrotum_radius),
+    )
+    w_scrotum = _smoothstep(-0.3, 0.3, shaft - scrotum)
+    w_head = _smoothstep(-0.15, 0.15, shaft - head) * (1.0 - w_scrotum)
+    return 1.0 - w_head - w_scrotum, w_head, w_scrotum
+
+
+def _scatter_spots(points, covered, weight, count, radius, rng):
+    """Drop `count` round spots on the surface, denser where `weight` is
+    high. Returns, per point, the distance to the nearest spot center in
+    units of that spot's radius (inf when out of reach) and the spot's
+    random strength."""
+    n = len(points)
+    candidates = np.flatnonzero(covered & (weight > 0))
+    if int(count) < 1 or len(candidates) == 0:
+        return np.full(n, np.inf), np.zeros(n)
+    p = weight[candidates] / weight[candidates].sum()
+    centers = points[rng.choice(candidates, size=int(count), p=p)]
+    radii = radius * rng.uniform(0.7, 1.3, len(centers))
+    strength = rng.uniform(0.5, 1.0, len(centers))
+    dist, idx = cKDTree(centers).query(points, distance_upper_bound=radius * 3.9, workers=-1)
+    hit = np.isfinite(dist)
+    d, s = np.full(n, np.inf), np.zeros(n)
+    d[hit] = dist[hit] / radii[idx[hit]]
+    s[hit] = strength[idx[hit]]
+    return d, s
+
+
+def _skin_layers(points, covered, shape, pack, seed, scale, area):
+    """Procedural skin at rest-space texel `points` (`covered` marks the
+    ones actually on the surface, not in a gutter). Feature sizes are
+    multiplied by `scale`, so a big or a small model gets the same look.
+
+    Returns (tint, height, roughness) per point: a multiplicative
+    linear-RGB tint for the albedo, a bump height in model units and a
+    roughness value."""
+    shaft_len, shaft_radius, head_radius, scrotum_radius = shape[:4]
+    w_shaft, w_head, w_scrotum = _skin_regions(
+        points, shaft_len, shaft_radius, head_radius, scrotum_radius
+    )
+    x, y, z = points.T
+    s = scale
+    rng = np.random.default_rng(seed)
+    tint = np.ones((len(points), 3))
+    height = np.zeros(len(points))
+    rough = 0.5 * w_shaft + 0.34 * w_head + 0.62 * w_scrotum - pack["shine"]
+
+    # Mottling: broad warm (vascular) and cool (pale) blotches, plus a
+    # finer patchiness in plain brightness.
+    blotch = (0.7 * _detail_noise(points, 0.9 * s, seed)
+              + 0.3 * _detail_noise(points, 0.3 * s, seed + 1))
+    tint *= 1 + pack["mottle"] * (np.outer(np.maximum(blotch, 0), [0.08, -0.03, -0.04])
+                                  + np.outer(np.maximum(-blotch, 0), [-0.03, 0.0, 0.025]))
+    tint *= (1 + 0.05 * pack["mottle"] * _detail_noise(points, 0.5 * s, seed + 2))[:, None]
+
+    # Veins under the skin: the zero crossings of a noise field form a
+    # network of thin lines — stretched lengthwise off the scrotum.
+    stretch = np.column_stack([np.ones_like(z), np.ones_like(z), 0.35 + 0.65 * w_scrotum])
+    lines = np.exp(-(_detail_noise(points * stretch, 0.8 * s, seed + 3) / 0.14) ** 2)
+    patches = _smoothstep(-0.3, 0.8, _detail_noise(points, 1.6 * s, seed + 4))
+    vein = pack["veins"] * lines * patches * (1 - 0.85 * w_head)
+    tint *= 1 - np.outer(vein, [0.10, 0.08, -0.02])
+
+    # Creases: wavy rings around the shaft and meandering folds (rugae)
+    # across the scrotum, each fading in and out in patches; plus the
+    # raphe, a faint seam down the scrotum and along under the shaft.
+    warp = _detail_noise(points, 0.9 * s, seed + 5)
+    rings = np.exp(-(1 + np.cos(2 * np.pi * z / (0.42 * s) + 2.2 * warp)) / 0.22)
+    folds = np.exp(-(1 + np.cos(2 * np.pi * y / (0.36 * s) + 1.6 * warp
+                                + 0.6 * _detail_noise(points, 0.3 * s, seed + 6))) / 0.3)
+    fade = _smoothstep(-0.4, 0.6, _detail_noise(points, 1.2 * s, seed + 7))
+    crease = pack["creases"] * fade * (rings * w_shaft + 1.4 * folds * w_scrotum)
+    underside = _smoothstep(0.0, -0.8, y / (1.5 * shaft_radius))
+    raphe = pack["creases"] * np.exp(-(x / (0.06 * s)) ** 2) * (w_scrotum + w_shaft * underside)
+    height += s * (0.006 * raphe - 0.01 * crease)
+    tint *= (1 - 0.1 * crease - 0.06 * raphe)[:, None]
+    rough += 0.04 * crease
+
+    # Follicles: small raised bumps on the scrotum — and all over the
+    # shaft with goosebumps.
+    goose = pack["goosebumps"]
+    where = w_scrotum + goose * w_shaft
+    count = pack["follicles"] * (14 + 16 * goose) / s ** 2 * area * where[covered].mean()
+    d, strength = _scatter_spots(points, covered, where, count, 0.032 * s * (1 + 0.9 * goose), rng)
+    bump = strength * np.exp(-d ** 2)
+    height += s * 0.01 * (1 + goose) * bump
+    tint *= 1 - np.outer(0.1 * bump, [0.8, 1.0, 1.0])
+    rough += 0.06 * bump
+
+    # Freckles: flat brown spots, sharper-edged than follicles.
+    if pack["freckles"] > 0:
+        count = pack["freckles"] * 5 / s ** 2 * area
+        d, strength = _scatter_spots(points, covered, 1 - 0.7 * w_head, count, 0.075 * s, rng)
+        tint *= 1 - np.outer(strength * _smoothstep(1.0, 0.45, d), [0.30, 0.40, 0.48])
+
+    # Grain: a fine network of furrows plus speckle — the micro-relief
+    # that breaks up highlights. The glans is smoother.
+    furrows = np.exp(-(_detail_noise(points, 0.07 * s, seed + 8) / 0.35) ** 2)
+    speckle = _detail_noise(points, 0.03 * s, seed + 9)
+    grain = pack["grain"] * (1 - 0.7 * w_head)
+    height += s * 0.0025 * grain * (0.6 * speckle - furrows)
+    tint *= (1 + grain * (0.025 * speckle - 0.05 * furrows))[:, None]
+    rough += 0.05 * grain * furrows
+
+    return tint, height, np.clip(rough, 0.12, 0.95)
+
+
+# ---------------------------- texture baking ----------------------------
+
+
+SKIN_TEXTURE_SIZE = 1024
+_ATLAS_PAD = 4  # gutter texels around each chart, so mipmaps don't bleed
+
+
+def _skyline_pack(widths, heights, size, pad):
+    """Bottom-left skyline packing of boxes (in texels, each grown by
+    `pad` on every side) into a size×size square, trying both
+    orientations. Returns (x, y, rotated) per box, or None if they
+    don't all fit."""
+    n = len(widths)
+    sky = np.zeros(size, dtype=int)
+    x, y, rotated = np.zeros(n, int), np.zeros(n, int), np.zeros(n, bool)
+    for i in np.argsort(-np.maximum(widths, heights)):
+        best = None
+        for rot in (False, True):
+            w = int(np.ceil(heights[i] if rot else widths[i])) + 2 * pad
+            h = int(np.ceil(widths[i] if rot else heights[i])) + 2 * pad
+            if w > size:
+                continue
+            tops = sliding_window_view(sky, w).max(axis=1)
+            at = int(np.argmin(tops))
+            if tops[at] + h <= size and (best is None or tops[at] + h < best[0]):
+                best = (tops[at] + h, at, w, h, rot)
+        if best is None:
+            return None
+        top, at, w, h, rot = best
+        x[i], y[i], rotated[i] = at, top - h, rot
+        sky[at:at + w] = top
+    return x, y, rotated
+
+
+def _uv_atlas(mesh, size, pad):
+    """Box-projection UV atlas. Each face goes to the axis (±X/±Y/±Z) its
+    normal points along most, and every connected patch of same-axis
+    faces becomes a chart, flattened by dropping that axis — cheap, and
+    no face flips over. Long charts get cut into pieces, then all of
+    them are skyline-packed as large as they fit.
+
+    Returns (vmap, faces, xy): vertices are split along chart seams
+    (`vmap` = original vertex of each new one) and `xy` is in texels,
+    rows running down the image (glTF's UV convention)."""
+    verts, faces = mesh.vertices, mesh.faces
+    every = np.arange(len(faces))
+
+    def axis_label(normals):  # 0..5 = +X, -X, +Y, -Y, +Z, -Z
+        axis = np.abs(normals).argmax(axis=1)
+        return axis * 2 + (normals[every, axis] < 0)
+
+    def facing(f, label):  # faces f's own normals along the axes of `label`
+        return mesh.face_normals[f, label // 2] * np.where(label % 2 == 1, -1.0, 1.0)
+
+    # Labels come from the smoothed (vertex) normals, so chart borders
+    # are clean curves rather than following every wobble.
+    label = axis_label(mesh.vertex_normals[faces].sum(axis=1))
+
+    # Charts = connected same-label patches. Tiny ones (where two axes
+    # nearly tie) are folded into a neighboring chart, a ring of faces
+    # per pass — but only into one whose axis the face itself looks along.
+    adj = mesh.face_adjacency
+
+    def patches(label):
+        same = label[adj[:, 0]] == label[adj[:, 1]]
+        graph = coo_matrix((np.ones(same.sum()), (adj[same, 0], adj[same, 1])),
+                           shape=(len(faces), len(faces)))
+        return connected_components(graph, directed=False)[1]
+
+    chart = patches(label)
+    for _ in range(3):
+        small = np.bincount(chart)[chart] < 24
+        if not small.any():
+            break
+        for a, b in ((adj[:, 0], adj[:, 1]), (adj[:, 1], adj[:, 0])):
+            take = small[a] & ~small[b]
+            take[take] = facing(a[take], label[b[take]]) > 0.3
+            label[a[take]] = label[b[take]]
+        chart = patches(label)
+    # A face turned away from its chart's axis (in tight curls like the
+    # corona) would flip over in the projection: give it its own axis.
+    # The deep undercut under a huge corona can still overlap a few
+    # texels within a chart — slightly misplaced grain, out of sight.
+    away = facing(every, label) < 0.1
+    if away.any():
+        label[away] = axis_label(mesh.face_normals)[away]
+        chart = patches(label)
+
+    def project(points, label):
+        # Drop the chart's axis; (u, v) stay right-handed around the
+        # outward normal, so no chart comes out mirrored.
+        ax, r = label // 2, np.arange(len(points))
+        u = points[r, (ax + 1) % 3] * np.where(label % 2 == 1, -1.0, 1.0)
+        return u, points[r, (ax + 2) % 3]
+
+    # Cut charts longer than `longest` into equal pieces along their
+    # long side (the shaft strips would otherwise waste most of the
+    # square texture).
+    cu, cv = project(verts[faces].mean(axis=1), label)
+    longest = 0.55 * np.sqrt(mesh.area)
+    piece = np.zeros(len(faces), dtype=np.int64)
+    for c in range(chart.max() + 1):
+        sel = chart == c
+        t = cu[sel] if np.ptp(cu[sel]) >= np.ptp(cv[sel]) else cv[sel]
+        pieces = int(np.ceil(np.ptp(t) / longest))
+        if pieces > 1:
+            piece[sel] = np.minimum((t - t.min()) / np.ptp(t) * pieces, pieces - 1).astype(int)
+    chart = np.unique(chart * (piece.max() + 1) + piece, return_inverse=True)[1]
+    n_charts = chart.max() + 1
+
+    # One new vertex per (chart, vertex) pair.
+    n = len(verts)
+    keys, inverse = np.unique(np.repeat(chart, 3) * n + faces.ravel(), return_inverse=True)
+    vmap, vchart = keys % n, keys // n
+    chart_label = np.zeros(n_charts, dtype=int)
+    chart_label[chart] = label
+    u, v = project(verts[vmap], chart_label[vchart])
+
+    lo_u, hi_u = np.full(n_charts, np.inf), np.full(n_charts, -np.inf)
+    lo_v, hi_v = np.full(n_charts, np.inf), np.full(n_charts, -np.inf)
+    np.minimum.at(lo_u, vchart, u)
+    np.maximum.at(hi_u, vchart, u)
+    np.minimum.at(lo_v, vchart, v)
+    np.maximum.at(hi_v, vchart, v)
+    w, h = hi_u - lo_u, hi_v - lo_v
+
+    # Largest scale (texels per model unit) at which everything fits.
+    lo, hi = 0.0, 2.0 * size / np.sqrt(mesh.area)
+    for _ in range(24):
+        k = 0.5 * (lo + hi)
+        if _skyline_pack(w * k, h * k, size, pad) is None:
+            hi = k
+        else:
+            lo = k
+    k = lo
+    ox, oy, rotated = _skyline_pack(w * k, h * k, size, pad)
+
+    du, dv = u - lo_u[vchart], v - lo_v[vchart]
+    rot = rotated[vchart]
+    # A rotated chart turns 90° — a rotation, so still not mirrored.
+    du, dv = np.where(rot, h[vchart] - dv, du), np.where(rot, du, dv)
+    top = np.where(rotated, w, h)[vchart]
+    xy = np.column_stack([
+        ox[vchart] + pad + du * k,
+        oy[vchart] + pad + (top - dv) * k,  # flip: image rows run down
+    ])
+    return vmap, inverse.reshape(-1, 3), xy
+
+
+def _barycentric(tri, pts):
+    """Barycentric weights of 2D points `pts` in triangles `tri` (n, 3, 2).
+    Outside a triangle some weights go negative (that's how gutter texels
+    extrapolate the surface); degenerate triangles give NaN."""
+    a = tri[:, 0]
+    e1, e2, q = tri[:, 1] - a, tri[:, 2] - a, pts - a
+    det = e1[:, 0] * e2[:, 1] - e2[:, 0] * e1[:, 1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        l1 = (q[:, 0] * e2[:, 1] - e2[:, 0] * q[:, 1]) / det
+        l2 = (e1[:, 0] * q[:, 1] - q[:, 0] * e1[:, 1]) / det
+        return np.column_stack([1.0 - l1 - l2, l1, l2])
+
+
+def _rasterize(xy, faces, size):
+    """Index of the triangle covering each texel center (-1 where none
+    does): every triangle tests the texels in its bounding box at once."""
+    tri = xy[faces]
+    lo = np.ceil(tri.min(axis=1) - 0.5).astype(int)
+    span = np.maximum(np.floor(tri.max(axis=1) - 0.5).astype(int) - lo + 1, 0)
+    count = span[:, 0] * span[:, 1]
+    t = np.repeat(np.arange(len(faces)), count)
+    local = np.arange(count.sum()) - np.repeat(np.cumsum(count) - count, count)
+    cols = lo[t, 0] + local % span[t, 0]
+    rows = lo[t, 1] + local // span[t, 0]
+    inside = (_barycentric(tri[t], np.column_stack([cols, rows]) + 0.5) >= -1e-6).all(axis=1)
+    image = np.full((size, size), -1)
+    image[rows[inside], cols[inside]] = t[inside]
+    return image
+
+
+@functools.lru_cache(maxsize=2)
+def _skin_atlas(shaft_len, shaft_radius, head_radius, scrotum_radius, corona_intensity):
+    """UV atlas of one body shape, plus for every texel near a chart the
+    rest-space point, normal and triangle it stands for. Only the Shape
+    sliders change the body's topology, so this is cached on them."""
+    body, _ = _build_unified_body(
+        shaft_len, shaft_radius, head_radius, scrotum_radius, corona_intensity
+    )
+    size, pad = SKIN_TEXTURE_SIZE, _ATLAS_PAD
+    vmap, faces, xy = _uv_atlas(body, size, pad)
+
+    covered = _rasterize(xy, faces, size)
+    # Gutter texels (within `pad` of a chart) take their nearest covered
+    # texel's triangle, extrapolated — so filtering at a seam sees the
+    # surface continue rather than a hard edge.
+    dist, (near_r, near_c) = distance_transform_edt(covered < 0, return_indices=True)
+    rows, cols = np.nonzero(dist <= pad)
+    tri = covered[near_r[rows, cols], near_c[rows, cols]]
+    bary = _barycentric(xy[faces[tri]], np.column_stack([cols, rows]) + 0.5)
+    # Any texel → the active texel whose value it shows (the empty space
+    # between charts copies the nearest chart edge).
+    index = np.full((size, size), -1)
+    index[rows, cols] = np.arange(len(rows))
+    fill = np.where(index >= 0, index, index[near_r, near_c]).ravel()
+
+    corner = vmap[faces[tri]].astype(np.int32)  # original vertices of each texel's triangle
+    normals = np.einsum("nk,nkc->nc", bary, body.vertex_normals[corner])
+    # World-space step per texel along +x (right) and +y (down) on each
+    # texel's triangle — what turns height-map gradients into slopes.
+    p = body.vertices[corner]
+    e1, e2 = p[:, 1] - p[:, 0], p[:, 2] - p[:, 0]
+    d = xy[faces[tri]]
+    d1, d2 = d[:, 1] - d[:, 0], d[:, 2] - d[:, 0]
+    det = (d1[:, 0] * d2[:, 1] - d2[:, 0] * d1[:, 1])[:, None]
+    return dict(
+        size=size, vmap=vmap, faces=faces, uv=(xy / size).astype(np.float32),
+        n_vertices=len(body.vertices), texels=(rows * size + cols).astype(np.int32),
+        fill=fill.astype(np.int32),
+        corner=corner, bary=bary.astype(np.float32),
+        covered=dist[rows, cols] == 0,
+        points=np.einsum("nk,nkc->nc", bary, p).astype(np.float32),
+        normals=(normals / np.linalg.norm(normals, axis=1, keepdims=True)).astype(np.float32),
+        step_x=((e1 * d2[:, 1:] - e2 * d1[:, 1:]) / det).astype(np.float32),
+        step_y=((e2 * d1[:, :1] - e1 * d2[:, :1]) / det).astype(np.float32),
+        area=body.area,
+        # Skin features scale with the model (1 = Default preset's size).
+        scale=float(np.clip(np.sqrt(body.area / 170.0), 0.4, 4.0)),
+    )
+
+
+def _encode_image(array, fmt, **options):
+    buffer = io.BytesIO()
+    Image.fromarray(array).save(buffer, format=fmt, **options)
+    return buffer.getvalue()
+
+
+@functools.lru_cache(maxsize=4)
+def _skin_maps(shape, skin_pack, seed):
+    """Bake a skin pack onto a body shape: the per-texel albedo tint, and
+    the normal and roughness maps as JPEG bytes ready to embed."""
+    atlas = _skin_atlas(*shape)
+    size, fill = atlas["size"], atlas["fill"]
+    tint, height, rough = _skin_layers(
+        atlas["points"], atlas["covered"], shape, SKIN_PACKS[skin_pack],
+        seed, atlas["scale"], atlas["area"],
+    )
+
+    # Height → tangent-space normals. Gradients come from the height
+    # image in texel steps; each texel's world-space steps turn them into
+    # slopes along glTF's tangent frame (+X right, +Y up in the image).
+    dy, dx = np.gradient(height[fill].reshape(size, size))
+    gx, gy = dx.ravel()[atlas["texels"]], dy.ravel()[atlas["texels"]]
+    n, sx, sy = atlas["normals"], atlas["step_x"], atlas["step_y"]
+    t = sx - np.sum(sx * n, axis=1, keepdims=True) * n
+    t /= np.linalg.norm(t, axis=1, keepdims=True)
+    b = np.cross(n, t)
+    m00, m01 = np.sum(sx * t, axis=1), np.sum(sx * b, axis=1)
+    m10, m11 = np.sum(sy * t, axis=1), np.sum(sy * b, axis=1)
+    det = m00 * m11 - m01 * m10
+    slope_t = (m11 * gx - m01 * gy) / det  # height gained per unit along t
+    slope_b = (m00 * gy - m10 * gx) / det  # ... and along b
+    normal = np.column_stack([-slope_t, -slope_b, np.ones(len(det))])
+    normal /= np.linalg.norm(normal, axis=1, keepdims=True)
+    normal_map = np.round(normal * 127.5 + 127.5).astype(np.uint8)
+    rough_map = np.round(rough * 255).astype(np.uint8)
+    return (
+        tint.astype(np.float32),
+        # JPEG without chroma subsampling: ~1/3 the size of PNG, ~1.5° off.
+        _encode_image(normal_map[fill].reshape(size, size, 3), "JPEG", quality=94, subsampling=0),
+        _encode_image(rough_map[fill].reshape(size, size), "JPEG", quality=90),
+    )
+
+
+def _bake_albedo(atlas, colors, tint=None, srgb=True):
+    """Vertex colors interpolated onto the texels, times the (linear) skin
+    tint, as an sRGB JPEG. `srgb` says how the vertex colors are encoded:
+    the color pickers' sRGB, or linear (material packs convert theirs)."""
+    rgb = np.einsum("nk,nkc->nc", atlas["bary"], colors[atlas["corner"]].astype(np.float32))
+    rgb = np.clip(rgb / 255.0, 0.0, 1.0)
+    if srgb:
+        rgb = np.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
+    rgb = np.clip(rgb * (1.0 if tint is None else tint), 0.0, 1.0)
+    rgb = np.where(rgb <= 0.0031308, 12.92 * rgb, 1.055 * rgb ** (1 / 2.4) - 0.055)
+    size = atlas["size"]
+    image = np.round(rgb * 255).astype(np.uint8)[atlas["fill"]].reshape(size, size, 3)
+    return _encode_image(image, "JPEG", quality=90)
+
+
+def _textured_glb(parts, images):
+    """Hand-rolled binary glTF writer — trimesh would store the textures
+    as PNG, several times bigger than JPEG for noisy skin maps.
+
+    `parts` become the primitives of one mesh: dicts of vertex
+    `attributes` (glTF name → array), `indices` and a glTF `material`
+    (None for glTF's default one) whose texture indices point into
+    `images` ((bytes, mime) pairs)."""
+    blob = bytearray()
+    gltf = {
+        "asset": {"version": "2.0", "generator": "Ultimate DIAO Drawer"},
+        "scene": 0, "scenes": [{"nodes": [0]}], "nodes": [{"mesh": 0}],
+        "meshes": [{"primitives": []}], "accessors": [], "bufferViews": [],
+    }
+    materials = []
+
+    def view(data, target=None):
+        blob.extend(b"\0" * (-len(blob) % 4))
+        gltf["bufferViews"].append({"buffer": 0, "byteOffset": len(blob), "byteLength": len(data)})
+        if target is not None:
+            gltf["bufferViews"][-1]["target"] = target
+        blob.extend(data)
+        return len(gltf["bufferViews"]) - 1
+
+    def accessor(array, target=34962):  # ARRAY_BUFFER
+        array = np.ascontiguousarray(array)
+        acc = {
+            "bufferView": view(array.tobytes(), target),
+            "componentType": {"float32": 5126, "uint8": 5121, "uint32": 5125}[array.dtype.name],
+            "count": len(array),
+            "type": "SCALAR" if array.ndim == 1 else f"VEC{array.shape[1]}",
+        }
+        if array.dtype == np.uint8:
+            acc["normalized"] = True
+        if acc["type"] == "VEC3":  # required for POSITION
+            acc["min"], acc["max"] = array.min(axis=0).tolist(), array.max(axis=0).tolist()
+        gltf["accessors"].append(acc)
+        return len(gltf["accessors"]) - 1
+
+    for part in parts:
+        primitive = {
+            "attributes": {k: accessor(a) for k, a in part["attributes"].items()},
+            "indices": accessor(part["indices"].astype(np.uint32).ravel(), 34963),
+        }
+        if part["material"] is not None:
+            materials.append(part["material"])
+            primitive["material"] = len(materials) - 1
+        gltf["meshes"][0]["primitives"].append(primitive)
+    if materials:
+        gltf["materials"] = materials
+    if images:
+        gltf["images"] = [{"bufferView": view(data), "mimeType": mime} for data, mime in images]
+        gltf["samplers"] = [{"magFilter": 9729, "minFilter": 9987,  # trilinear,
+                             "wrapS": 33071, "wrapT": 33071}]       # clamped
+        gltf["textures"] = [{"source": i, "sampler": 0} for i in range(len(images))]
+    gltf["buffers"] = [{"byteLength": len(blob)}]
+    return _pack_glb(gltf, blob)
+
+
+def _skin_glb(mesh, shape, skin_pack, seed, material_pack):
+    """.glb of a finished model with a skin pack: the body (the first
+    vertices — hair is concatenated after it) textured through its
+    shape's atlas, the hair as a second, vertex-colored primitive.
+
+    With "Original" the skin supplies color detail, relief and roughness.
+    Any other material pack keeps its own colors and finish and only
+    borrows the relief — painted skin, or a cast."""
+    atlas = _skin_atlas(*shape)
+    tint, normal_jpg, rough_jpg = _skin_maps(shape, skin_pack, seed)
+    pack = MATERIAL_PACKS.get(material_pack)
+    n_body, vmap = atlas["n_vertices"], atlas["vmap"]
+    colors = mesh.visual.vertex_colors
+    vertices = mesh.vertices.astype(np.float32)
+    normals = mesh.vertex_normals.astype(np.float32)
+
+    if pack is None:
+        albedo = _bake_albedo(atlas, colors[:n_body, :3], tint)
+    else:
+        albedo = _bake_albedo(atlas, colors[:n_body, :3], srgb=False)
+    images = [(albedo, "image/jpeg"), (normal_jpg, "image/jpeg")]
+    if pack is None:
+        images.append((rough_jpg, "image/jpeg"))
+        body_finish = dict(metallicFactor=0.0, roughnessFactor=1.0,
+                           metallicRoughnessTexture={"index": 2})
+        hair_material = None  # glTF's default material, as without a skin pack
+        extra = {}
+    else:
+        body_finish = dict(metallicFactor=float(pack["metallic"]),
+                           roughnessFactor=float(pack["roughness"]))
+        extra = {"emissiveFactor": [float(c) for c in pack["emissive"]]} if "emissive" in pack else {}
+        hair_material = dict(name=material_pack, doubleSided=True,
+                             pbrMetallicRoughness=body_finish, **extra)
+
+    parts = [dict(
+        attributes=dict(POSITION=vertices[:n_body][vmap], NORMAL=normals[:n_body][vmap],
+                        TEXCOORD_0=atlas["uv"]),
+        indices=atlas["faces"],
+        material=dict(name=f"Skin ({skin_pack})", doubleSided=True, normalTexture={"index": 1},
+                      pbrMetallicRoughness=dict(body_finish, baseColorTexture={"index": 0}),
+                      **extra),
+    )]
+    if len(vertices) > n_body:
+        parts.append(dict(
+            attributes=dict(POSITION=vertices[n_body:], NORMAL=normals[n_body:],
+                            COLOR_0=colors[n_body:]),
+            indices=mesh.faces[len(atlas["faces"]):] - n_body,
+            material=hair_material,
+        ))
+    return _textured_glb(parts, images)
 
 
 # ------------------------------- assembly ------------------------------
@@ -812,6 +1382,7 @@ def create_model(
     vein_count, vein_radius,
     name,
     material_pack="Original",
+    skin_pack="None",
 ):
     seed = int(wrinkle_seed) if wrinkle_seed is not None else 0
 
@@ -892,6 +1463,13 @@ def create_model(
     # preserved through tonemapping, and distinct hues come through.
 
     file_path = os.path.join(_OUTPUT_DIR, f"{sanitize_name(name)}_model.glb")
+    if SKIN_PACKS.get(skin_pack) is not None:
+        # 11. Skin pack: bake textures through the body's UV atlas.
+        shape = (shaft_len, shaft_radius, head_radius, scrotum_radius, corona_intensity)
+        with open(file_path, "wb") as f:
+            f.write(_skin_glb(body, shape, skin_pack, seed, material_pack))
+        return file_path
+
     glb_bytes = trimesh.exchange.gltf.export_glb(body)
     # "Original" keeps trimesh's default (no PBR material) — the baseline
     # the color pickers were tuned against. Packs inject their own.
@@ -922,7 +1500,7 @@ PARAM_NAMES = [
     "wrinkle_smoothness", "wrinkle_seed",
     "hair_density", "hair_length",
     "vein_count", "vein_radius",
-    "name", "material_pack",
+    "name", "material_pack", "skin_pack",
 ]
 
 # (min, max, step) for every slider — shared by the UI and by recipe
@@ -965,7 +1543,7 @@ PRESETS = {
         scrotum_wrinkle_intensity=0.10, wrinkle_smoothness=2.5, wrinkle_seed=42,
         hair_density=15, hair_length=0.6,
         vein_count=4, vein_radius=0.06,
-        name="diao", material_pack="Original",
+        name="diao", material_pack="Original", skin_pack="None",
     ),
     "Smooth": dict(
         shaft_len=6, shaft_radius=1.0, head_radius=1.4, scrotum_radius=1.8,
@@ -975,7 +1553,7 @@ PRESETS = {
         scrotum_wrinkle_intensity=0.0, wrinkle_smoothness=2.5, wrinkle_seed=0,
         hair_density=0, hair_length=0.5,
         vein_count=0, vein_radius=0.05,
-        name="smooth", material_pack="Original",
+        name="smooth", material_pack="Original", skin_pack="None",
     ),
     "Realistic": dict(
         shaft_len=8, shaft_radius=1.1, head_radius=1.6, scrotum_radius=2.0,
@@ -985,7 +1563,7 @@ PRESETS = {
         scrotum_wrinkle_intensity=0.16, wrinkle_smoothness=2.0, wrinkle_seed=7,
         hair_density=30, hair_length=0.7,
         vein_count=8, vein_radius=0.07,
-        name="realistic", material_pack="Original",
+        name="realistic", material_pack="Original", skin_pack="Natural",
     ),
     "Cartoon": dict(
         shaft_len=5, shaft_radius=1.4, head_radius=2.0, scrotum_radius=2.2,
@@ -995,7 +1573,7 @@ PRESETS = {
         scrotum_wrinkle_intensity=0.0, wrinkle_smoothness=2.5, wrinkle_seed=0,
         hair_density=0, hair_length=0.5,
         vein_count=0, vein_radius=0.04,
-        name="cartoon", material_pack="Original",
+        name="cartoon", material_pack="Original", skin_pack="None",
     ),
 }
 
@@ -1010,8 +1588,8 @@ def _snap(key, x):
 
 def random_args(name):
     """A random but sensible parameter set (narrower than the slider
-    ranges), a random material pack, and one of the presets' palettes.
-    Keeps the current name."""
+    ranges), a random material and skin pack, and one of the presets'
+    palettes. Keeps the current name."""
     rng = np.random.default_rng()
     palette = PRESETS[str(rng.choice(list(PRESETS)))]
     ranges = dict(
@@ -1026,6 +1604,7 @@ def random_args(name):
     values.update({k: palette[k] for k in COLOR_PARAMS})
     values["name"] = name
     values["material_pack"] = str(rng.choice(list(MATERIAL_PACKS)))
+    values["skin_pack"] = str(rng.choice(list(SKIN_PACKS)))
     return [values[k] for k in PARAM_NAMES]
 
 
@@ -1077,8 +1656,11 @@ def decode_recipe(code):
             if not re.fullmatch(r"#[0-9A-Fa-f]{6}", str(value)):
                 value = default[key]
         elif key == "material_pack":
-            if value not in MATERIAL_PACKS:
+            if not isinstance(value, str) or value not in MATERIAL_PACKS:
                 value = "Original"
+        elif key == "skin_pack":
+            if not isinstance(value, str) or value not in SKIN_PACKS:
+                value = "None"
         elif key == "name":
             value = str(value)[:64]
         values[key] = value
@@ -1104,7 +1686,7 @@ def build_ui():
         gr.Markdown(
             "# Ultimate DIAO Drawer (UDD)\n"
             "Tweak parameters → click **Generate** (or use a preset, a "
-            "material pack, or 🎲 Random).  "
+            "material or skin pack, or 🎲 Random).  "
             "Sliders auto-update on release; color pickers and the name "
             "field require an explicit Generate to keep the UI snappy."
         )
@@ -1131,6 +1713,16 @@ def build_ui():
                         value=default["material_pack"],
                         label="Material pack",
                         info="Original uses the Color tab; every other pack replaces those colors.",
+                    )
+
+                with gr.Tab("Texture"):
+                    skin_pack = gr.Dropdown(
+                        list(SKIN_PACKS),
+                        value=default["skin_pack"],
+                        label="Skin pack",
+                        info="Bakes mottling, veins, creases, follicles and fine grain into "
+                             "textures. None keeps the flat vertex colors. With a material "
+                             "pack other than Original, only the skin's relief carries over.",
                     )
 
                 with gr.Tab("Surface"):
@@ -1192,7 +1784,7 @@ def build_ui():
             wrinkle_smoothness, wrinkle_seed,
             hair_density, hair_length,
             vein_count, vein_radius,
-            name, material_pack,
+            name, material_pack, skin_pack,
         ]
         outputs = [output, recipe]
 
@@ -1214,6 +1806,7 @@ def build_ui():
         # Picking a pack re-renders straight away. `.input` (not `.change`)
         # so presets / Random / Load setting the dropdown don't render twice.
         material_pack.input(generate, inputs=all_inputs, outputs=outputs)
+        skin_pack.input(generate, inputs=all_inputs, outputs=outputs)
 
         for btn, key in [
             (btn_default, "Default"),
